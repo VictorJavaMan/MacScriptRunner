@@ -142,6 +142,7 @@ private struct ScriptRow: View {
 
 private struct TerminalOutputView: View {
     @EnvironmentObject private var model: ScriptLibrary
+    @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @State private var terminalInput = ""
     @FocusState private var inputIsFocused: Bool
 
@@ -158,7 +159,7 @@ private struct TerminalOutputView: View {
             ScrollViewReader { proxy in
                 ScrollView([.vertical, .horizontal]) {
                     Text(model.output)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.system(size: terminalFontSize, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(14)
@@ -175,7 +176,7 @@ private struct TerminalOutputView: View {
                     .foregroundStyle(model.runningScriptID == nil ? Color.secondary.opacity(0.45) : Color.accentColor)
                 TextField("Введите ответ для скрипта…", text: $terminalInput)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.system(size: terminalFontSize, design: .monospaced))
                     .focused($inputIsFocused)
                     .disabled(model.runningScriptID == nil)
                     .onSubmit { sendTerminalInput() }
