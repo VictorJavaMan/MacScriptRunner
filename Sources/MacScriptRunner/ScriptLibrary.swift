@@ -97,8 +97,14 @@ final class ScriptLibrary: ObservableObject {
         objectWillChange.send()
     }
 
-    func moveScripts(from source: IndexSet, to destination: Int) {
-        scripts.move(fromOffsets: source, toOffset: destination)
+    func moveScript(withID sourceID: String, to targetID: String) {
+        guard sourceID != targetID,
+              let sourceIndex = scripts.firstIndex(where: { $0.id == sourceID }),
+              let targetIndex = scripts.firstIndex(where: { $0.id == targetID }) else { return }
+
+        let movedScript = scripts.remove(at: sourceIndex)
+        let destination = min(targetIndex, scripts.endIndex)
+        scripts.insert(movedScript, at: destination)
         saveCurrentOrder()
     }
 
