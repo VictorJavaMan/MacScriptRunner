@@ -28,6 +28,13 @@ struct MacScriptRunnerApp: App {
                 .environmentObject(model)
                 .preferredColorScheme(Appearance(rawValue: appearance)?.colorScheme)
         }
+
+        WindowGroup("Редактор скрипта", id: "script-editor", for: String.self) { $scriptID in
+            ScriptEditorView(scriptID: scriptID ?? "")
+                .environmentObject(model)
+                .preferredColorScheme(Appearance(rawValue: appearance)?.colorScheme)
+        }
+        .defaultSize(width: 820, height: 620)
     }
 }
 

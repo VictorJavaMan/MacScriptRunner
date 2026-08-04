@@ -55,6 +55,7 @@ struct ContentView: View {
 private struct ScriptRow: View {
     @EnvironmentObject private var model: ScriptLibrary
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openWindow) private var openWindow
     @State private var isEditingNote = false
     @State private var isDropTarget = false
     @FocusState private var noteFieldIsFocused: Bool
@@ -156,6 +157,12 @@ private struct ScriptRow: View {
         } isTargeted: { targeted in
             isDropTarget = targeted
         }
+        .overlay {
+            RightClickView {
+                model.selectedScriptID = script.id
+                openWindow(id: "script-editor", value: script.id)
+            }
+        }
     }
 
     private var selectionColor: Color {
@@ -167,6 +174,40 @@ private struct ScriptRow: View {
     private func finishEditingNote() {
         noteFieldIsFocused = false
         isEditingNote = false
+    }
+}
+
+private struct RightClickView: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeNSView(context: Context) -> RightClickNSView {
+        let view = RightClickNSView()
+        view.action = context.coordinator.action
+        return view
+    }
+
+    func updateNSView(_ nsView: RightClickNSView, context: Context) {
+        context.coordinator.action = action
+        nsView.action = context.coordinator.action
+    }
+
+    final class Coordinator {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+    }
+}
+
+private final class RightClickNSView: NSView {
+    var action: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        NSApp.currentEvent?.type == .rightMouseDown ? self : nil
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        action?()
     }
 }
 

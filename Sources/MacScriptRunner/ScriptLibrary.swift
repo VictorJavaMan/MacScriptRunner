@@ -108,6 +108,26 @@ final class ScriptLibrary: ObservableObject {
         saveCurrentOrder()
     }
 
+    func scriptWasRenamed(from oldURL: URL, to newURL: URL) {
+        let oldID = oldURL.path
+        let newID = newURL.path
+
+        var allNotes = notes()
+        if let note = allNotes.removeValue(forKey: oldID) {
+            allNotes[newID] = note
+            defaults.set(allNotes, forKey: notesKey)
+        }
+
+        var savedOrder = defaults.stringArray(forKey: orderKey) ?? []
+        if let index = savedOrder.firstIndex(of: oldID) {
+            savedOrder[index] = newID
+            defaults.set(savedOrder, forKey: orderKey)
+        }
+
+        if selectedScriptID == oldID { selectedScriptID = newID }
+        reload()
+    }
+
     func toggle(_ script: ScriptItem) {
         if runningScriptID == script.id { stopRunningScript() }
         else { run(script) }
