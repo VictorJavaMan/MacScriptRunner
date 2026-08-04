@@ -17,8 +17,10 @@ struct ContentView: View {
                         Button("Выбрать папку") { model.chooseFolder() }
                     }
                 } else {
-                    List(model.scripts) { script in
-                        ScriptRow(script: script)
+                    List {
+                        ForEach(model.scripts) { script in
+                            ScriptRow(script: script)
+                        }
                     }
                     .listStyle(.sidebar)
                 }
@@ -53,7 +55,9 @@ struct ContentView: View {
 private struct ScriptRow: View {
     @EnvironmentObject private var model: ScriptLibrary
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openWindow) private var openWindow
     @State private var isEditingNote = false
+    @State private var isDropTarget = false
     @FocusState private var noteFieldIsFocused: Bool
     let script: ScriptItem
 
@@ -66,6 +70,19 @@ private struct ScriptRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.tertiary)
+                .frame(width: 16, height: 30)
+                .contentShape(Rectangle())
+                .draggable(script.id) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "terminal")
+                        Text(script.name)
+                    }
+                    .padding(10)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .help("Перетащить скрипт")
             Button {
                 model.selectedScriptID = script.id
             } label: {
@@ -109,7 +126,14 @@ private struct ScriptRow: View {
         .padding(.vertical, 7)
         .contentShape(Rectangle())
         .background {
-            if model.selectedScriptID == script.id {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.20 : 0.14))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1.5)
+                    }
+            } else if model.selectedScriptID == script.id {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(selectionColor)
                     .overlay {
@@ -126,6 +150,19 @@ private struct ScriptRow: View {
         }
         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
         .listRowBackground(Color.clear)
+        .dropDestination(for: String.self) { draggedIDs, _ in
+            guard let draggedID = draggedIDs.first else { return false }
+            model.moveScript(withID: draggedID, to: script.id)
+            return true
+        } isTargeted: { targeted in
+            isDropTarget = targeted
+        }
+        .overlay {
+            RightClickView {
+                model.selectedScriptID = script.id
+                openWindow(id: "script-editor", value: script.id)
+            }
+        }
     }
 
     private var selectionColor: Color {
@@ -137,6 +174,40 @@ private struct ScriptRow: View {
     private func finishEditingNote() {
         noteFieldIsFocused = false
         isEditingNote = false
+    }
+}
+
+private struct RightClickView: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeNSView(context: Context) -> RightClickNSView {
+        let view = RightClickNSView()
+        view.action = context.coordinator.action
+        return view
+    }
+
+    func updateNSView(_ nsView: RightClickNSView, context: Context) {
+        context.coordinator.action = action
+        nsView.action = context.coordinator.action
+    }
+
+    final class Coordinator {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+    }
+}
+
+private final class RightClickNSView: NSView {
+    var action: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        NSApp.currentEvent?.type == .rightMouseDown ? self : nil
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        action?()
     }
 }
 
