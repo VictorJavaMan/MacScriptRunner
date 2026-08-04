@@ -21,6 +21,7 @@ final class ScriptLibrary: ObservableObject {
     private let defaults = UserDefaults.standard
     private let folderKey = "scriptsFolderPath"
     private let notesKey = "scriptNotes"
+    private let orderKey = "scriptOrder"
 
     var folderURL: URL? {
         guard let path = defaults.string(forKey: folderKey), !path.isEmpty else { return nil }
@@ -60,12 +61,24 @@ final class ScriptLibrary: ObservableObject {
             options: [.skipsHiddenFiles]
         )) ?? []
 
-        scripts = urls.filter { url in
+        let discoveredScripts = urls.filter { url in
             let values = try? url.resourceValues(forKeys: keys)
             return values?.isRegularFile == true && url.pathExtension.lowercased() == "sh"
         }
         .map(ScriptItem.init)
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+        let savedOrder = defaults.stringArray(forKey: orderKey) ?? []
+        let orderPositions = Dictionary(uniqueKeysWithValues: savedOrder.enumerated().map { ($1, $0) })
+        scripts = discoveredScripts.sorted { left, right in
+            switch (orderPositions[left.id], orderPositions[right.id]) {
+            case let (leftIndex?, rightIndex?): leftIndex < rightIndex
+            case (_?, nil): true
+            case (nil, _?): false
+            case (nil, nil): left.name.localizedStandardCompare(right.name) == .orderedAscending
+            }
+        }
+        saveCurrentOrder()
 
         if selectedScriptID == nil || !scripts.contains(where: { $0.id == selectedScriptID }) {
             selectedScriptID = scripts.first?.id
@@ -82,6 +95,11 @@ final class ScriptLibrary: ObservableObject {
         else { allNotes[script.id] = note }
         defaults.set(allNotes, forKey: notesKey)
         objectWillChange.send()
+    }
+
+    func moveScripts(from source: IndexSet, to destination: Int) {
+        scripts.move(fromOffsets: source, toOffset: destination)
+        saveCurrentOrder()
     }
 
     func toggle(_ script: ScriptItem) {
@@ -167,6 +185,10 @@ final class ScriptLibrary: ObservableObject {
 
     private func notes() -> [String: String] {
         defaults.dictionary(forKey: notesKey) as? [String: String] ?? [:]
+    }
+
+    private func saveCurrentOrder() {
+        defaults.set(scripts.map(\.id), forKey: orderKey)
     }
 
     private func launchCommand(for scriptURL: URL) -> (executable: URL, arguments: [String]) {

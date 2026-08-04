@@ -17,8 +17,11 @@ struct ContentView: View {
                         Button("Выбрать папку") { model.chooseFolder() }
                     }
                 } else {
-                    List(model.scripts) { script in
-                        ScriptRow(script: script)
+                    List {
+                        ForEach(model.scripts) { script in
+                            ScriptRow(script: script)
+                        }
+                        .onMove(perform: model.moveScripts)
                     }
                     .listStyle(.sidebar)
                 }
