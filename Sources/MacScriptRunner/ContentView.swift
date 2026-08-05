@@ -246,9 +246,10 @@ private struct TerminalOutputView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled(model.output.isEmpty)
+                .disabled(model.output.isEmpty || model.runningScriptID != nil)
                 .help("Копировать вывод. Выделенный фрагмент также можно скопировать сочетанием ⌘C")
                 Button("Очистить") { model.clearOutput() }
+                    .disabled(model.runningScriptID != nil)
             }
             .padding(12)
             Divider()
