@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -216,6 +217,7 @@ private struct TerminalOutputView: View {
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @AppStorage("terminalLineWrapping") private var terminalLineWrapping = true
     @State private var terminalInput = ""
+    @State private var didCopyOutput = false
     @FocusState private var inputIsFocused: Bool
 
     var body: some View {
@@ -224,25 +226,38 @@ private struct TerminalOutputView: View {
                 Label(statusText, systemImage: statusIcon)
                     .foregroundStyle(statusColor)
                 Spacer()
+                if didCopyOutput {
+                    Label("Скопировано", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
+                Menu {
+                    Button("Копировать весь вывод") {
+                        copyToPasteboard(model.output)
+                    }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+
+                    Button("Копировать только результат") {
+                        copyToPasteboard(outputWithoutServiceLines)
+                    }
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(model.output.isEmpty)
+                .help("Копировать вывод. Выделенный фрагмент также можно скопировать сочетанием ⌘C")
                 Button("Очистить") { model.clearOutput() }
             }
             .padding(12)
             Divider()
-            ScrollViewReader { proxy in
-                ScrollView(terminalLineWrapping ? .vertical : [.vertical, .horizontal]) {
-                    Text(model.output)
-                        .font(.system(size: terminalFontSize, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .fixedSize(horizontal: !terminalLineWrapping, vertical: true)
-                        .padding(14)
-                        .id("bottom")
-                }
-                .background(Color(nsColor: .textBackgroundColor))
-                .onChange(of: model.output) { _, _ in
-                    withAnimation(.linear(duration: 0.08)) { proxy.scrollTo("bottom", anchor: .bottom) }
-                }
-            }
+            TerminalOutputTextView(
+                text: model.output,
+                fontSize: terminalFontSize,
+                wrapsLines: terminalLineWrapping,
+                onMiddleClickCopy: showCopyConfirmation
+            )
             Divider()
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
@@ -292,5 +307,147 @@ private struct TerminalOutputView: View {
         model.sendInput(terminalInput)
         terminalInput = ""
         inputIsFocused = true
+    }
+
+    private var outputWithoutServiceLines: String {
+        var lines = model.output.components(separatedBy: .newlines)
+        if lines.first?.hasPrefix("$ ") == true {
+            lines.removeFirst()
+            while lines.first?.isEmpty == true { lines.removeFirst() }
+        }
+        while let last = lines.last,
+              last.isEmpty || last.hasPrefix("[Процесс завершён") || last == "[Остановка процесса…]" {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        showCopyConfirmation()
+    }
+
+    private func showCopyConfirmation() {
+        withAnimation { didCopyOutput = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation { didCopyOutput = false }
+        }
+    }
+}
+
+private struct TerminalOutputTextView: NSViewRepresentable {
+    let text: String
+    let fontSize: Double
+    let wrapsLines: Bool
+    let onMiddleClickCopy: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onMiddleClickCopy: onMiddleClickCopy)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+
+        let textView = MiddleClickTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.textColor = .labelColor
+        textView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        textView.textContainerInset = NSSize(width: 14, height: 14)
+        textView.middleClickAction = context.coordinator.didCopyLine
+        textView.string = text
+        scrollView.documentView = textView
+        configureWrapping(textView: textView, scrollView: scrollView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? MiddleClickTextView else { return }
+        context.coordinator.onMiddleClickCopy = onMiddleClickCopy
+        textView.middleClickAction = context.coordinator.didCopyLine
+        textView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        configureWrapping(textView: textView, scrollView: scrollView)
+
+        guard textView.string != text else { return }
+        let selectedRange = textView.selectedRange()
+        let visibleBottom = scrollView.contentView.bounds.maxY
+        let documentHeight = textView.bounds.height
+        let shouldFollowOutput = documentHeight - visibleBottom < 40
+
+        textView.string = text
+        textView.setSelectedRange(NSRange(
+            location: min(selectedRange.location, textView.string.utf16.count),
+            length: 0
+        ))
+        if shouldFollowOutput || selectedRange.length == 0 {
+            textView.scrollToEndOfDocument(nil)
+        }
+    }
+
+    private func configureWrapping(textView: NSTextView, scrollView: NSScrollView) {
+        scrollView.hasHorizontalScroller = !wrapsLines
+        textView.isHorizontallyResizable = !wrapsLines
+        textView.autoresizingMask = wrapsLines ? [.width] : []
+        textView.textContainer?.widthTracksTextView = wrapsLines
+        textView.textContainer?.containerSize = NSSize(
+            width: wrapsLines ? max(scrollView.contentSize.width, 1) : CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        if wrapsLines {
+            textView.frame.size.width = max(scrollView.contentSize.width, 1)
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        var onMiddleClickCopy: () -> Void
+
+        init(onMiddleClickCopy: @escaping () -> Void) {
+            self.onMiddleClickCopy = onMiddleClickCopy
+        }
+
+        func didCopyLine() {
+            onMiddleClickCopy()
+        }
+    }
+}
+
+private final class MiddleClickTextView: NSTextView {
+    var middleClickAction: (() -> Void)?
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else {
+            super.otherMouseDown(with: event)
+            return
+        }
+
+        let point = convert(event.locationInWindow, from: nil)
+        let index = characterIndexForInsertion(at: point)
+        let source = string as NSString
+        guard source.length > 0, index <= source.length else { return }
+
+        let safeIndex = min(index, source.length - 1)
+        let lineRange = source.lineRange(for: NSRange(location: safeIndex, length: 0))
+        let line = source.substring(with: lineRange)
+        let cleaned = line.replacingOccurrences(
+            of: #"[ \t\r\n]+$"#,
+            with: "",
+            options: .regularExpression
+        )
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(cleaned, forType: .string)
+        middleClickAction?()
     }
 }
