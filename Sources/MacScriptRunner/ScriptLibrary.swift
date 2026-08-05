@@ -7,6 +7,11 @@ struct ScriptItem: Identifiable, Hashable {
     var name: String { url.deletingPathExtension().lastPathComponent }
 }
 
+private struct PersistedTerminalState: Codable {
+    var outputs: [String: String]
+    var terminationStatuses: [String: Int32]
+}
+
 @MainActor
 final class ScriptLibrary: ObservableObject {
     static let emptyOutputMessage = "Выберите скрипт и нажмите кнопку запуска."
@@ -24,6 +29,7 @@ final class ScriptLibrary: ObservableObject {
     private var inputPipe: Pipe?
     private var outputsByScriptID: [String: String] = [:]
     private var terminationStatusesByScriptID: [String: Int32] = [:]
+    private var persistenceTask: Task<Void, Never>?
     private let defaults = UserDefaults.standard
     private let folderKey = "scriptsFolderPath"
     private let notesKey = "scriptNotes"
@@ -40,6 +46,7 @@ final class ScriptLibrary: ObservableObject {
     }
 
     init() {
+        loadPersistedOutputs()
         reload()
     }
 
@@ -140,6 +147,7 @@ final class ScriptLibrary: ObservableObject {
             terminationStatusesByScriptID[newID] = storedStatus
         }
         if selectedScriptID == oldID { selectedScriptID = newID }
+        savePersistedOutputs()
         reload()
     }
 
@@ -158,6 +166,7 @@ final class ScriptLibrary: ObservableObject {
         )
         terminationStatusesByScriptID.removeValue(forKey: script.id)
         updateDisplayedOutput()
+        scheduleOutputPersistence()
 
         let newProcess = Process()
         let pipe = Pipe()
@@ -184,6 +193,7 @@ final class ScriptLibrary: ObservableObject {
                 self.appendOutput("\n\n[Процесс завершён с кодом \(status)]\n", for: script.id)
                 self.terminationStatusesByScriptID[script.id] = status
                 if self.selectedScriptID == script.id { self.terminationStatus = status }
+                self.scheduleOutputPersistence()
                 if self.process === newProcess {
                     self.runningScriptID = nil
                     self.process = nil
@@ -203,6 +213,7 @@ final class ScriptLibrary: ObservableObject {
             appendOutput("Ошибка запуска: \(error.localizedDescription)\n", for: script.id)
             terminationStatusesByScriptID[script.id] = -1
             updateDisplayedOutput()
+            scheduleOutputPersistence()
         }
     }
 
@@ -221,6 +232,7 @@ final class ScriptLibrary: ObservableObject {
             terminationStatusesByScriptID.removeValue(forKey: selectedScriptID)
         }
         updateDisplayedOutput()
+        savePersistedOutputs()
     }
 
     func sendInput(_ input: String) {
@@ -240,11 +252,13 @@ final class ScriptLibrary: ObservableObject {
     private func setOutput(_ value: String, for scriptID: String) {
         outputsByScriptID[scriptID] = value
         if selectedScriptID == scriptID { output = value }
+        scheduleOutputPersistence()
     }
 
     private func appendOutput(_ value: String, for scriptID: String) {
         outputsByScriptID[scriptID, default: ""] += value
         if selectedScriptID == scriptID { output = outputsByScriptID[scriptID] ?? Self.emptyOutputMessage }
+        scheduleOutputPersistence()
     }
 
     private func updateDisplayedOutput() {
@@ -263,6 +277,51 @@ final class ScriptLibrary: ObservableObject {
 
     private func saveCurrentOrder() {
         defaults.set(scripts.map(\.id), forKey: orderKey)
+    }
+
+    private var outputStateURL: URL? {
+        guard let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else { return nil }
+        return applicationSupport
+            .appendingPathComponent("MacScriptRunner", isDirectory: true)
+            .appendingPathComponent("terminal-state.json")
+    }
+
+    private func loadPersistedOutputs() {
+        guard let outputStateURL,
+              let data = try? Data(contentsOf: outputStateURL),
+              let state = try? JSONDecoder().decode(PersistedTerminalState.self, from: data) else { return }
+        outputsByScriptID = state.outputs
+        terminationStatusesByScriptID = state.terminationStatuses
+    }
+
+    private func scheduleOutputPersistence() {
+        persistenceTask?.cancel()
+        persistenceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            self?.savePersistedOutputs()
+        }
+    }
+
+    private func savePersistedOutputs() {
+        guard let outputStateURL else { return }
+        let state = PersistedTerminalState(
+            outputs: outputsByScriptID,
+            terminationStatuses: terminationStatusesByScriptID
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: outputStateURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: outputStateURL, options: .atomic)
+        } catch {
+            // A persistence failure must not interrupt a running script.
+        }
     }
 
     private func launchCommand(for scriptURL: URL) -> (executable: URL, arguments: [String]) {
