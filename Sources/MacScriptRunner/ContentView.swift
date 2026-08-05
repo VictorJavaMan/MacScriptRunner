@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -216,6 +217,7 @@ private struct TerminalOutputView: View {
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @AppStorage("terminalLineWrapping") private var terminalLineWrapping = true
     @State private var terminalInput = ""
+    @State private var didCopyOutput = false
     @FocusState private var inputIsFocused: Bool
 
     var body: some View {
@@ -224,6 +226,28 @@ private struct TerminalOutputView: View {
                 Label(statusText, systemImage: statusIcon)
                     .foregroundStyle(statusColor)
                 Spacer()
+                if didCopyOutput {
+                    Label("Скопировано", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
+                Menu {
+                    Button("Копировать весь вывод") {
+                        copyToPasteboard(model.output)
+                    }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+
+                    Button("Копировать только результат") {
+                        copyToPasteboard(outputWithoutServiceLines)
+                    }
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(model.output.isEmpty)
+                .help("Копировать вывод. Выделенный фрагмент также можно скопировать сочетанием ⌘C")
                 Button("Очистить") { model.clearOutput() }
             }
             .padding(12)
@@ -292,5 +316,28 @@ private struct TerminalOutputView: View {
         model.sendInput(terminalInput)
         terminalInput = ""
         inputIsFocused = true
+    }
+
+    private var outputWithoutServiceLines: String {
+        var lines = model.output.components(separatedBy: .newlines)
+        if lines.first?.hasPrefix("$ ") == true {
+            lines.removeFirst()
+            while lines.first?.isEmpty == true { lines.removeFirst() }
+        }
+        while let last = lines.last,
+              last.isEmpty || last.hasPrefix("[Процесс завершён") || last == "[Остановка процесса…]" {
+            lines.removeLast()
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        withAnimation { didCopyOutput = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation { didCopyOutput = false }
+        }
     }
 }
