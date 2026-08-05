@@ -10,6 +10,7 @@ struct ScriptItem: Identifiable, Hashable {
 private struct PersistedTerminalState: Codable {
     var outputs: [String: String]
     var terminationStatuses: [String: Int32]
+    var lastRunDates: [String: Date]?
 }
 
 @MainActor
@@ -29,6 +30,7 @@ final class ScriptLibrary: ObservableObject {
     private var inputPipe: Pipe?
     private var outputsByScriptID: [String: String] = [:]
     private var terminationStatusesByScriptID: [String: Int32] = [:]
+    private var lastRunDatesByScriptID: [String: Date] = [:]
     private var persistenceTask: Task<Void, Never>?
     private let defaults = UserDefaults.standard
     private let folderKey = "scriptsFolderPath"
@@ -105,6 +107,10 @@ final class ScriptLibrary: ObservableObject {
         notes()[script.id] ?? ""
     }
 
+    func lastRunDate(for script: ScriptItem) -> Date? {
+        lastRunDatesByScriptID[script.id]
+    }
+
     func setNote(_ note: String, for script: ScriptItem) {
         var allNotes = notes()
         if note.isEmpty { allNotes.removeValue(forKey: script.id) }
@@ -146,6 +152,9 @@ final class ScriptLibrary: ObservableObject {
         if let storedStatus = terminationStatusesByScriptID.removeValue(forKey: oldID) {
             terminationStatusesByScriptID[newID] = storedStatus
         }
+        if let lastRunDate = lastRunDatesByScriptID.removeValue(forKey: oldID) {
+            lastRunDatesByScriptID[newID] = lastRunDate
+        }
         if selectedScriptID == oldID { selectedScriptID = newID }
         savePersistedOutputs()
         reload()
@@ -160,6 +169,7 @@ final class ScriptLibrary: ObservableObject {
         stopRunningScript()
         let launch = launchCommand(for: script.url)
         selectedScriptID = script.id
+        lastRunDatesByScriptID[script.id] = Date()
         setOutput(
             "$ \(([launch.executable.path] + launch.arguments).joined(separator: " "))\n\n",
             for: script.id
@@ -295,6 +305,7 @@ final class ScriptLibrary: ObservableObject {
               let state = try? JSONDecoder().decode(PersistedTerminalState.self, from: data) else { return }
         outputsByScriptID = state.outputs
         terminationStatusesByScriptID = state.terminationStatuses
+        lastRunDatesByScriptID = state.lastRunDates ?? [:]
     }
 
     private func scheduleOutputPersistence() {
@@ -310,7 +321,8 @@ final class ScriptLibrary: ObservableObject {
         guard let outputStateURL else { return }
         let state = PersistedTerminalState(
             outputs: outputsByScriptID,
-            terminationStatuses: terminationStatusesByScriptID
+            terminationStatuses: terminationStatusesByScriptID,
+            lastRunDates: lastRunDatesByScriptID
         )
         do {
             try FileManager.default.createDirectory(
