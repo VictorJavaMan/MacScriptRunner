@@ -246,9 +246,10 @@ private struct TerminalOutputView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled(model.output.isEmpty)
+                .disabled(model.output.isEmpty || model.runningScriptID != nil)
                 .help("Копировать вывод. Выделенный фрагмент также можно скопировать сочетанием ⌘C")
                 Button("Очистить") { model.clearOutput() }
+                    .disabled(model.runningScriptID != nil)
             }
             .padding(12)
             Divider()
@@ -261,18 +262,18 @@ private struct TerminalOutputView: View {
             Divider()
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
-                    .foregroundStyle(model.runningScriptID == nil ? Color.secondary.opacity(0.45) : Color.accentColor)
+                    .foregroundStyle(model.isSelectedScriptRunning ? Color.accentColor : Color.secondary.opacity(0.45))
                 TextField("Введите ответ для скрипта…", text: $terminalInput)
                     .textFieldStyle(.plain)
                     .font(.system(size: terminalFontSize, design: .monospaced))
                     .focused($inputIsFocused)
-                    .disabled(model.runningScriptID == nil)
+                    .disabled(!model.isSelectedScriptRunning)
                     .onSubmit { sendTerminalInput() }
                 Button { sendTerminalInput() } label: {
                     Image(systemName: "arrow.up.circle.fill")
                 }
                 .buttonStyle(.borderless)
-                .disabled(model.runningScriptID == nil || terminalInput.isEmpty)
+                .disabled(!model.isSelectedScriptRunning || terminalInput.isEmpty)
                 .help("Отправить ввод")
             }
             .padding(.horizontal, 14)
@@ -285,18 +286,18 @@ private struct TerminalOutputView: View {
     }
 
     private var statusText: String {
-        if model.runningScriptID != nil { return "Выполняется" }
+        if model.isSelectedScriptRunning { return "Выполняется" }
         if let code = model.terminationStatus { return code == 0 ? "Завершено" : "Ошибка (код \(code))" }
         return "Терминал"
     }
     private var statusIcon: String {
-        if model.runningScriptID != nil { return "circle.fill" }
+        if model.isSelectedScriptRunning { return "circle.fill" }
         if model.terminationStatus == 0 { return "checkmark.circle.fill" }
         if model.terminationStatus != nil { return "exclamationmark.triangle.fill" }
         return "terminal"
     }
     private var statusColor: Color {
-        if model.runningScriptID != nil { return .orange }
+        if model.isSelectedScriptRunning { return .orange }
         if model.terminationStatus == 0 { return .green }
         if model.terminationStatus != nil { return .red }
         return .secondary
