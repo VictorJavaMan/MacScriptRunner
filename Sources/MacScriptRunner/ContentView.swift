@@ -33,11 +33,19 @@ struct ContentView: View {
                     Spacer()
                     Button { model.reload() } label: {
                         Image(systemName: "arrow.clockwise")
+                            .frame(width: 14, height: 14)
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(width: 30, height: 26)
                     .help("Обновить список")
                     Button { model.chooseFolder() } label: {
                         Image(systemName: "folder")
+                            .frame(width: 14, height: 14)
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(width: 30, height: 26)
                     .help("Выбрать папку")
                 }
                 .padding(10)
@@ -101,6 +109,16 @@ private struct ScriptRow: View {
                         Text(model.note(for: script).isEmpty ? "Без примечания" : model.note(for: script))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                    }
+                    if let lastRunDate = model.lastRunDate(for: script) {
+                        Label {
+                            Text(lastRunDate, format: .dateTime.day().month().year().hour().minute().second())
+                        } icon: {
+                            Image(systemName: "clock")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
