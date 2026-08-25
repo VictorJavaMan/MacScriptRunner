@@ -2,5 +2,11 @@
 .cache/
 dist/
 .DS_Store
+build-windows/
+dist-windows/
+windows/vendor/
+windows/__pycache__/
+windows/*.spec
+windows/AppIcon.ico
 *.xcuserstate
 xcuserdata/

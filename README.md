@@ -1,5 +1,9 @@
 # MacScriptRunner
 
+> В репозитории также есть Windows-порт. Готовая сборка создаётся командой
+> `powershell -ExecutionPolicy Bypass -File .\build-windows.ps1` и появляется в
+> `dist-windows\MacScriptRunner-Windows.exe`. Для запуска `.sh` требуется Git for Windows (Git Bash).
+
 Нативное приложение для macOS 14+, которое собирает `.sh`-скрипты из выбранной папки, запускает их, показывает вывод и позволяет редактировать исходный код без перехода в Terminal или сторонний редактор.
 
 ## Возможности
