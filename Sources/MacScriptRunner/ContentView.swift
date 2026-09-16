@@ -165,10 +165,12 @@ private struct ScriptGroupRow: View {
                     Button("Удалить группу…", role: .destructive, action: onDelete)
                 } label: {
                     Image(systemName: "ellipsis")
+                        .symbolRenderingMode(.monochrome)
                         .frame(width: 20, height: 20)
-                        .foregroundStyle(groupControlColor)
+                        .foregroundColor(groupControlColor)
                 }
                 .menuStyle(.borderlessButton)
+                .tint(groupControlColor)
                 .fixedSize()
             }
             .padding(.horizontal, 9)
