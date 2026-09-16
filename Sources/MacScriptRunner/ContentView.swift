@@ -118,7 +118,6 @@ struct ContentView: View {
         if let editingGroupID { model.renameGroup(editingGroupID, to: groupName) }
         else { model.createGroup(named: groupName) }
     }
-
 }
 
 private struct ScriptGroupRow: View {
