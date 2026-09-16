@@ -7,6 +7,12 @@ struct ScriptItem: Identifiable, Hashable {
     var name: String { url.deletingPathExtension().lastPathComponent }
 }
 
+struct ScriptGroup: Identifiable, Codable, Hashable {
+    let id: UUID
+    var name: String
+    var scriptIDs: [String]
+}
+
 private struct PersistedTerminalState: Codable {
     var outputs: [String: String]
     var terminationStatuses: [String: Int32]
@@ -18,6 +24,7 @@ final class ScriptLibrary: ObservableObject {
     static let emptyOutputMessage = "Выберите скрипт и нажмите кнопку запуска."
 
     @Published private(set) var scripts: [ScriptItem] = []
+    @Published private(set) var groups: [ScriptGroup] = []
     @Published var selectedScriptID: String? {
         didSet { updateDisplayedOutput() }
     }
@@ -36,6 +43,7 @@ final class ScriptLibrary: ObservableObject {
     private let folderKey = "scriptsFolderPath"
     private let notesKey = "scriptNotes"
     private let orderKey = "scriptOrder"
+    private let groupsKey = "scriptGroups"
 
     var folderURL: URL? {
         guard let path = defaults.string(forKey: folderKey), !path.isEmpty else { return nil }
@@ -48,6 +56,7 @@ final class ScriptLibrary: ObservableObject {
     }
 
     init() {
+        loadGroups()
         loadPersistedOutputs()
         reload()
     }
@@ -111,6 +120,51 @@ final class ScriptLibrary: ObservableObject {
         lastRunDatesByScriptID[script.id]
     }
 
+    var ungroupedScripts: [ScriptItem] {
+        let groupedIDs = Set(groups.flatMap(\.scriptIDs))
+        return scripts.filter { !groupedIDs.contains($0.id) }
+    }
+
+    func scripts(in group: ScriptGroup) -> [ScriptItem] {
+        let positions = Dictionary(uniqueKeysWithValues: group.scriptIDs.enumerated().map { ($1, $0) })
+        return scripts
+            .filter { positions[$0.id] != nil }
+            .sorted { (positions[$0.id] ?? 0) < (positions[$1.id] ?? 0) }
+    }
+
+    func groupID(for script: ScriptItem) -> UUID? {
+        groups.first(where: { $0.scriptIDs.contains(script.id) })?.id
+    }
+
+    func createGroup(named rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        groups.append(ScriptGroup(id: UUID(), name: name, scriptIDs: []))
+        saveGroups()
+    }
+
+    func renameGroup(_ groupID: UUID, to rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[index].name = name
+        saveGroups()
+    }
+
+    func deleteGroup(_ groupID: UUID) {
+        groups.removeAll { $0.id == groupID }
+        saveGroups()
+    }
+
+    func assign(_ script: ScriptItem, to groupID: UUID?) {
+        for index in groups.indices {
+            groups[index].scriptIDs.removeAll { $0 == script.id }
+        }
+        if let groupID, let index = groups.firstIndex(where: { $0.id == groupID }) {
+            groups[index].scriptIDs.append(script.id)
+        }
+        saveGroups()
+    }
+
     func setNote(_ note: String, for script: ScriptItem) {
         var allNotes = notes()
         if note.isEmpty { allNotes.removeValue(forKey: script.id) }
@@ -145,6 +199,16 @@ final class ScriptLibrary: ObservableObject {
             savedOrder[index] = newID
             defaults.set(savedOrder, forKey: orderKey)
         }
+
+
+        var didChangeGroups = false
+        for index in groups.indices {
+            if let scriptIndex = groups[index].scriptIDs.firstIndex(of: oldID) {
+                groups[index].scriptIDs[scriptIndex] = newID
+                didChangeGroups = true
+            }
+        }
+        if didChangeGroups { saveGroups() }
 
         if let storedOutput = outputsByScriptID.removeValue(forKey: oldID) {
             outputsByScriptID[newID] = storedOutput
@@ -287,6 +351,17 @@ final class ScriptLibrary: ObservableObject {
 
     private func saveCurrentOrder() {
         defaults.set(scripts.map(\.id), forKey: orderKey)
+    }
+
+    private func loadGroups() {
+        guard let data = defaults.data(forKey: groupsKey),
+              let storedGroups = try? JSONDecoder().decode([ScriptGroup].self, from: data) else { return }
+        groups = storedGroups
+    }
+
+    private func saveGroups() {
+        guard let data = try? JSONEncoder().encode(groups) else { return }
+        defaults.set(data, forKey: groupsKey)
     }
 
     private var outputStateURL: URL? {
