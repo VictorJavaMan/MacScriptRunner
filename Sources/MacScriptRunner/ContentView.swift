@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var groupName = ""
     @State private var showingGroupEditor = false
     @State private var groupPendingDeletion: ScriptGroup?
+    @State private var groupDismissTask: Task<Void, Never>?
 
     var body: some View {
         NavigationSplitView {
@@ -31,7 +32,8 @@ struct ContentView: View {
                                     get: { activeGroupID == group.id },
                                     set: { if !$0 && activeGroupID == group.id { activeGroupID = nil } }
                                 ),
-                                onHover: { activeGroupID = group.id },
+                                onHover: { hovering in updateGroupHover(group.id, hovering: hovering) },
+                                onPopoverHover: { hovering in updateGroupHover(group.id, hovering: hovering) },
                                 onRename: { beginRenaming(group) },
                                 onDelete: { groupPendingDeletion = group }
                             )
@@ -124,6 +126,19 @@ struct ContentView: View {
         if let editingGroupID { model.renameGroup(editingGroupID, to: groupName) }
         else { model.createGroup(named: groupName) }
     }
+
+    private func updateGroupHover(_ groupID: UUID, hovering: Bool) {
+        groupDismissTask?.cancel()
+        if hovering {
+            activeGroupID = groupID
+        } else {
+            groupDismissTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, activeGroupID == groupID else { return }
+                activeGroupID = nil
+            }
+        }
+    }
 }
 
 private struct ScriptGroupRow: View {
@@ -131,7 +146,8 @@ private struct ScriptGroupRow: View {
     @State private var isDropTarget = false
     let group: ScriptGroup
     @Binding var isPresented: Bool
-    let onHover: () -> Void
+    let onHover: (Bool) -> Void
+    let onPopoverHover: (Bool) -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
 
@@ -170,11 +186,12 @@ private struct ScriptGroupRow: View {
                 .fill(isDropTarget ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06))
         }
         .onHover { hovering in
-            if hovering { onHover() }
+            onHover(hovering)
         }
         .popover(isPresented: $isPresented, arrowEdge: .leading) {
             GroupScriptsPopover(group: group)
                 .environmentObject(model)
+                .onHover(perform: onPopoverHover)
         }
         .dropDestination(for: String.self) { scriptIDs, _ in
             guard let scriptID = scriptIDs.first,
@@ -247,6 +264,16 @@ private struct GroupScriptRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if let lastRunDate = model.lastRunDate(for: script) {
+                        Label {
+                            Text(lastRunDate, format: .dateTime.day().month().year().hour().minute().second())
+                        } icon: {
+                            Image(systemName: "clock")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
