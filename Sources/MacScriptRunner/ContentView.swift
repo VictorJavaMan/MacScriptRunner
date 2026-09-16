@@ -123,6 +123,7 @@ struct ContentView: View {
 
 private struct ScriptGroupRow: View {
     @EnvironmentObject private var model: ScriptLibrary
+    @Environment(\.colorScheme) private var colorScheme
     @State private var isDropTarget = false
     @State private var isExpanded = false
     let group: ScriptGroup
@@ -140,7 +141,7 @@ private struct ScriptGroupRow: View {
                     HStack(spacing: 9) {
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(groupControlColor)
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         Image(systemName: isDropTarget ? "folder.fill.badge.plus" : (isExpanded ? "folder.fill" : "folder"))
                             .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
@@ -165,6 +166,7 @@ private struct ScriptGroupRow: View {
                 } label: {
                     Image(systemName: "ellipsis")
                         .frame(width: 20, height: 20)
+                        .foregroundStyle(groupControlColor)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
@@ -204,6 +206,10 @@ private struct ScriptGroupRow: View {
     }
 
     private var groupScripts: [ScriptItem] { model.scripts(in: group) }
+
+    private var groupControlColor: Color {
+        colorScheme == .dark ? .white : .black
+    }
 }
 
 private struct GroupScriptRow: View {
