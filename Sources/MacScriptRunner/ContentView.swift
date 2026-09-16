@@ -3,6 +3,9 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: ScriptLibrary
+    @AppStorage("groupLongScriptLists") private var groupLongScriptLists = true
+    @AppStorage("scriptGroupingThreshold") private var scriptGroupingThreshold = 12
+    @AppStorage("collapsedScriptGroups") private var collapsedScriptGroups = ""
 
     var body: some View {
         NavigationSplitView {
@@ -19,8 +22,28 @@ struct ContentView: View {
                     }
                 } else {
                     List {
-                        ForEach(model.scripts) { script in
-                            ScriptRow(script: script)
+                        if shouldGroupScripts {
+                            ForEach(scriptGroups) { group in
+                                DisclosureGroup(isExpanded: expansionBinding(for: group.id)) {
+                                    ForEach(group.scripts) { script in
+                                        ScriptRow(script: script)
+                                    }
+                                } label: {
+                                    HStack {
+                                        Text(group.title)
+                                            .font(.headline)
+                                        Spacer()
+                                        Text("\(group.scripts.count)")
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(.vertical, 3)
+                                }
+                            }
+                        } else {
+                            ForEach(model.scripts) { script in
+                                ScriptRow(script: script)
+                            }
                         }
                     }
                     .listStyle(.sidebar)
@@ -59,6 +82,56 @@ struct ContentView: View {
             model.reload()
         }
     }
+
+    private var shouldGroupScripts: Bool {
+        groupLongScriptLists && model.scripts.count > scriptGroupingThreshold
+    }
+
+    private var scriptGroups: [ScriptGroup] {
+        let grouped = Dictionary(grouping: model.scripts) { script in
+            scriptGroupKey(for: script.name)
+        }
+        return grouped.keys.sorted(by: groupKeyComesBefore).map { key in
+            ScriptGroup(id: key, title: key, scripts: grouped[key] ?? [])
+        }
+    }
+
+    private var collapsedGroups: Set<String> {
+        Set(collapsedScriptGroups.split(separator: "\n").map(String.init))
+    }
+
+    private func expansionBinding(for groupID: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedGroups.contains(groupID) },
+            set: { isExpanded in
+                var groups = collapsedGroups
+                if isExpanded { groups.remove(groupID) }
+                else { groups.insert(groupID) }
+                collapsedScriptGroups = groups.sorted().joined(separator: "\n")
+            }
+        )
+    }
+
+    private func scriptGroupKey(for name: String) -> String {
+        guard let first = name.trimmingCharacters(in: .whitespacesAndNewlines).first else { return "Прочее" }
+        if first.isNumber { return "0–9" }
+        if first.isLetter { return String(first).uppercased() }
+        return "Прочее"
+    }
+
+    private func groupKeyComesBefore(_ left: String, _ right: String) -> Bool {
+        if left == "0–9" { return right != "0–9" }
+        if right == "0–9" { return false }
+        if left == "Прочее" { return false }
+        if right == "Прочее" { return true }
+        return left.localizedStandardCompare(right) == .orderedAscending
+    }
+}
+
+private struct ScriptGroup: Identifiable {
+    let id: String
+    let title: String
+    let scripts: [ScriptItem]
 }
 
 private struct ScriptRow: View {
