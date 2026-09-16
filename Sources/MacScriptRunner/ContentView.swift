@@ -3,9 +3,11 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: ScriptLibrary
-    @AppStorage("groupLongScriptLists") private var groupLongScriptLists = true
-    @AppStorage("scriptGroupingThreshold") private var scriptGroupingThreshold = 12
-    @AppStorage("collapsedScriptGroups") private var collapsedScriptGroups = ""
+    @State private var activeGroupID: UUID?
+    @State private var editingGroupID: UUID?
+    @State private var groupName = ""
+    @State private var showingGroupEditor = false
+    @State private var groupPendingDeletion: ScriptGroup?
 
     var body: some View {
         NavigationSplitView {
@@ -22,28 +24,20 @@ struct ContentView: View {
                     }
                 } else {
                     List {
-                        if shouldGroupScripts {
-                            ForEach(scriptGroups) { group in
-                                DisclosureGroup(isExpanded: expansionBinding(for: group.id)) {
-                                    ForEach(group.scripts) { script in
-                                        ScriptRow(script: script)
-                                    }
-                                } label: {
-                                    HStack {
-                                        Text(group.title)
-                                            .font(.headline)
-                                        Spacer()
-                                        Text("\(group.scripts.count)")
-                                            .font(.caption.monospacedDigit())
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .padding(.vertical, 3)
-                                }
-                            }
-                        } else {
-                            ForEach(model.scripts) { script in
-                                ScriptRow(script: script)
-                            }
+                        ForEach(model.groups) { group in
+                            ScriptGroupRow(
+                                group: group,
+                                isPresented: Binding(
+                                    get: { activeGroupID == group.id },
+                                    set: { if !$0 && activeGroupID == group.id { activeGroupID = nil } }
+                                ),
+                                onHover: { activeGroupID = group.id },
+                                onRename: { beginRenaming(group) },
+                                onDelete: { groupPendingDeletion = group }
+                            )
+                        }
+                        ForEach(model.ungroupedScripts) { script in
+                            ScriptRow(script: script)
                         }
                     }
                     .listStyle(.sidebar)
@@ -54,6 +48,14 @@ struct ContentView: View {
                     Text("\(model.scripts.count) скриптов")
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Button { beginCreatingGroup() } label: {
+                        Image(systemName: "folder.badge.plus")
+                            .frame(width: 14, height: 14)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(width: 30, height: 26)
+                    .help("Создать группу")
                     Button { model.reload() } label: {
                         Image(systemName: "arrow.clockwise")
                             .frame(width: 14, height: 14)
@@ -81,57 +83,229 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.reload()
         }
-    }
-
-    private var shouldGroupScripts: Bool {
-        groupLongScriptLists && model.scripts.count > scriptGroupingThreshold
-    }
-
-    private var scriptGroups: [ScriptGroup] {
-        let grouped = Dictionary(grouping: model.scripts) { script in
-            scriptGroupKey(for: script.name)
+        .alert(editingGroupID == nil ? "Новая группа" : "Переименовать группу", isPresented: $showingGroupEditor) {
+            TextField("Название группы", text: $groupName)
+            Button("Отмена", role: .cancel) { }
+            Button("Сохранить") { saveGroupName() }
+                .disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Введите название, которое будет показано в списке скриптов.")
         }
-        return grouped.keys.sorted(by: groupKeyComesBefore).map { key in
-            ScriptGroup(id: key, title: key, scripts: grouped[key] ?? [])
-        }
-    }
-
-    private var collapsedGroups: Set<String> {
-        Set(collapsedScriptGroups.split(separator: "\n").map(String.init))
-    }
-
-    private func expansionBinding(for groupID: String) -> Binding<Bool> {
-        Binding(
-            get: { !collapsedGroups.contains(groupID) },
-            set: { isExpanded in
-                var groups = collapsedGroups
-                if isExpanded { groups.remove(groupID) }
-                else { groups.insert(groupID) }
-                collapsedScriptGroups = groups.sorted().joined(separator: "\n")
+        .confirmationDialog(
+            "Удалить группу «\(groupPendingDeletion?.name ?? "")»?",
+            isPresented: Binding(
+                get: { groupPendingDeletion != nil },
+                set: { if !$0 { groupPendingDeletion = nil } }
+            )
+        ) {
+            Button("Удалить группу", role: .destructive) {
+                if let group = groupPendingDeletion { model.deleteGroup(group.id) }
+                groupPendingDeletion = nil
             }
-        )
+            Button("Отмена", role: .cancel) { groupPendingDeletion = nil }
+        } message: {
+            Text("Скрипты останутся в общей папке и вернутся в основной список.")
+        }
     }
 
-    private func scriptGroupKey(for name: String) -> String {
-        guard let first = name.trimmingCharacters(in: .whitespacesAndNewlines).first else { return "Прочее" }
-        if first.isNumber { return "0–9" }
-        if first.isLetter { return String(first).uppercased() }
-        return "Прочее"
+    private func beginCreatingGroup() {
+        editingGroupID = nil
+        groupName = ""
+        showingGroupEditor = true
     }
 
-    private func groupKeyComesBefore(_ left: String, _ right: String) -> Bool {
-        if left == "0–9" { return right != "0–9" }
-        if right == "0–9" { return false }
-        if left == "Прочее" { return false }
-        if right == "Прочее" { return true }
-        return left.localizedStandardCompare(right) == .orderedAscending
+    private func beginRenaming(_ group: ScriptGroup) {
+        editingGroupID = group.id
+        groupName = group.name
+        showingGroupEditor = true
+    }
+
+    private func saveGroupName() {
+        if let editingGroupID { model.renameGroup(editingGroupID, to: groupName) }
+        else { model.createGroup(named: groupName) }
     }
 }
 
-private struct ScriptGroup: Identifiable {
-    let id: String
-    let title: String
-    let scripts: [ScriptItem]
+private struct ScriptGroupRow: View {
+    @EnvironmentObject private var model: ScriptLibrary
+    @State private var isDropTarget = false
+    let group: ScriptGroup
+    @Binding var isPresented: Bool
+    let onHover: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: isDropTarget ? "folder.fill.badge.plus" : "folder.fill")
+                .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(group.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(groupScripts.isEmpty ? "Нет скриптов" : "\(groupScripts.count) скриптов")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            Menu {
+                Button("Переименовать…", action: onRename)
+                Button("Удалить группу…", role: .destructive, action: onDelete)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 20, height: 20)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isDropTarget ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06))
+        }
+        .onHover { hovering in
+            if hovering { onHover() }
+        }
+        .popover(isPresented: $isPresented, arrowEdge: .leading) {
+            GroupScriptsPopover(group: group)
+                .environmentObject(model)
+        }
+        .dropDestination(for: String.self) { scriptIDs, _ in
+            guard let scriptID = scriptIDs.first,
+                  let script = model.scripts.first(where: { $0.id == scriptID }) else { return false }
+            model.assign(script, to: group.id)
+            return true
+        } isTargeted: { isDropTarget = $0 }
+        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+        .listRowBackground(Color.clear)
+        .help("Наведите, чтобы открыть группу. Перетащите сюда скрипт, чтобы добавить его.")
+    }
+
+    private var groupScripts: [ScriptItem] { model.scripts(in: group) }
+}
+
+private struct GroupScriptsPopover: View {
+    @EnvironmentObject private var model: ScriptLibrary
+    let group: ScriptGroup
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Label(group.name, systemImage: "folder.fill")
+                    .font(.headline)
+                Spacer()
+                Text("\(scripts.count)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(12)
+            Divider()
+            if scripts.isEmpty {
+                ContentUnavailableView(
+                    "Группа пуста",
+                    systemImage: "tray",
+                    description: Text("Перетащите скрипт на группу или выберите её в меню строки.")
+                )
+                .frame(width: 360, height: 180)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(scripts) { script in
+                            GroupScriptRow(script: script)
+                        }
+                    }
+                    .padding(8)
+                }
+                .frame(width: 400)
+                .frame(minHeight: 100, maxHeight: 420)
+            }
+        }
+    }
+
+    private var scripts: [ScriptItem] { model.scripts(in: group) }
+}
+
+private struct GroupScriptRow: View {
+    @EnvironmentObject private var model: ScriptLibrary
+    @Environment(\.openWindow) private var openWindow
+    let script: ScriptItem
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Button { model.selectedScriptID = script.id } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(script.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(model.note(for: script).isEmpty ? "Без примечания" : model.note(for: script))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            ScriptGroupMenu(script: script)
+            Button { model.toggle(script) } label: {
+                Image(systemName: model.runningScriptID == script.id ? "stop.fill" : "play.fill")
+                    .frame(width: 24, height: 24)
+                    .foregroundStyle(model.runningScriptID == script.id ? Color.red : Color.accentColor)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background {
+            if model.selectedScriptID == script.id {
+                RoundedRectangle(cornerRadius: 7).fill(Color.accentColor.opacity(0.10))
+            }
+        }
+        .contentShape(Rectangle())
+        .overlay {
+            RightClickView {
+                model.selectedScriptID = script.id
+                openWindow(id: "script-editor", value: script.id)
+            }
+        }
+    }
+}
+
+private struct ScriptGroupMenu: View {
+    @EnvironmentObject private var model: ScriptLibrary
+    let script: ScriptItem
+
+    var body: some View {
+        Menu {
+            Button {
+                model.assign(script, to: nil)
+            } label: {
+                if model.groupID(for: script) == nil { Label("Без группы", systemImage: "checkmark") }
+                else { Text("Без группы") }
+            }
+            Divider()
+            ForEach(model.groups) { group in
+                Button {
+                    model.assign(script, to: group.id)
+                } label: {
+                    if model.groupID(for: script) == group.id { Label(group.name, systemImage: "checkmark") }
+                    else { Text(group.name) }
+                }
+            }
+        } label: {
+            Image(systemName: "folder.badge.gearshape")
+                .frame(width: 20, height: 20)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Переместить в группу")
+    }
 }
 
 private struct ScriptRow: View {
@@ -206,6 +380,9 @@ private struct ScriptRow: View {
                     noteFieldIsFocused = true
                 }
             )
+            if !model.groups.isEmpty {
+                ScriptGroupMenu(script: script)
+            }
             Button { model.toggle(script) } label: {
                 Image(systemName: model.runningScriptID == script.id ? "stop.fill" : "play.fill")
                     .frame(width: 24, height: 24)

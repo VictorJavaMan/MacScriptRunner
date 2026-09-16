@@ -5,8 +5,6 @@ struct SettingsView: View {
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @AppStorage("terminalLineWrapping") private var terminalLineWrapping = true
-    @AppStorage("groupLongScriptLists") private var groupLongScriptLists = true
-    @AppStorage("scriptGroupingThreshold") private var scriptGroupingThreshold = 12
 
     var body: some View {
         Form {
@@ -30,23 +28,6 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-            }
-
-            Section("Список скриптов") {
-                Toggle("Группировать длинный список", isOn: $groupLongScriptLists)
-                Stepper(value: $scriptGroupingThreshold, in: 5...50) {
-                    HStack {
-                        Text("Группировать, если скриптов больше")
-                        Spacer()
-                        Text("\(scriptGroupingThreshold)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .disabled(!groupLongScriptLists)
-                Text("Скрипты автоматически распределяются по сворачиваемым секциям по первой букве имени. Состояние секций сохраняется.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Терминал") {
@@ -73,6 +54,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 560, height: 520)
+        .frame(width: 560, height: 390)
     }
 }
