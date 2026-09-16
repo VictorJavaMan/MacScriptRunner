@@ -272,6 +272,7 @@ private struct GroupScriptRow: View {
 
 private struct ScriptGroupMenu: View {
     @EnvironmentObject private var model: ScriptLibrary
+    @Environment(\.colorScheme) private var colorScheme
     let script: ScriptItem
 
     var body: some View {
@@ -293,11 +294,18 @@ private struct ScriptGroupMenu: View {
             }
         } label: {
             Image(systemName: "folder.badge.gearshape")
+                .symbolRenderingMode(.monochrome)
                 .frame(width: 20, height: 20)
+                .foregroundColor(controlColor)
         }
         .menuStyle(.borderlessButton)
+        .tint(controlColor)
         .fixedSize()
         .help("Переместить в группу")
+    }
+
+    private var controlColor: Color {
+        colorScheme == .dark ? .white : .black
     }
 }
 
