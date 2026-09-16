@@ -130,32 +130,35 @@ private struct ScriptGroupRow: View {
     let onDelete: () -> Void
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            if groupScripts.isEmpty {
-                Text("Перетащите сюда скрипт или выберите группу в меню строки")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-                    .padding(.leading, 6)
-            } else {
-                ForEach(groupScripts) { script in
-                    GroupScriptRow(script: script)
-                }
-            }
-        } label: {
+        VStack(spacing: 2) {
             HStack(spacing: 9) {
-                Image(systemName: isDropTarget ? "folder.fill.badge.plus" : (isExpanded ? "folder.fill" : "folder"))
-                    .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
-                    .font(.title3)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(group.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(groupScripts.isEmpty ? "Нет скриптов" : "\(groupScripts.count) скриптов")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        Image(systemName: isDropTarget ? "folder.fill.badge.plus" : (isExpanded ? "folder.fill" : "folder"))
+                            .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.name)
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text(groupScripts.isEmpty ? "Нет скриптов" : "\(groupScripts.count) скриптов")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                Spacer()
+                .buttonStyle(.plain)
                 Menu {
                     Button("Переименовать…", action: onRename)
                     Button("Удалить группу…", role: .destructive, action: onDelete)
@@ -166,13 +169,28 @@ private struct ScriptGroupRow: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isDropTarget ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isDropTarget ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06))
+            }
+
+            if isExpanded {
+                if groupScripts.isEmpty {
+                    Text("Перетащите сюда скрипт или выберите группу в меню строки")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 8)
+                        .padding(.leading, 28)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(groupScripts) { script in
+                        GroupScriptRow(script: script)
+                            .padding(.leading, 22)
+                    }
+                }
+            }
         }
         .dropDestination(for: String.self) { scriptIDs, _ in
             guard let scriptID = scriptIDs.first,
