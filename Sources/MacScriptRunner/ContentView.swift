@@ -3,12 +3,10 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: ScriptLibrary
-    @State private var activeGroupID: UUID?
     @State private var editingGroupID: UUID?
     @State private var groupName = ""
     @State private var showingGroupEditor = false
     @State private var groupPendingDeletion: ScriptGroup?
-    @State private var groupDismissTask: Task<Void, Never>?
 
     var body: some View {
         NavigationSplitView {
@@ -28,12 +26,6 @@ struct ContentView: View {
                         ForEach(model.groups) { group in
                             ScriptGroupRow(
                                 group: group,
-                                isPresented: Binding(
-                                    get: { activeGroupID == group.id },
-                                    set: { if !$0 && activeGroupID == group.id { activeGroupID = nil } }
-                                ),
-                                onHover: { hovering in updateGroupHover(group.id, hovering: hovering) },
-                                onPopoverHover: { hovering in updateGroupHover(group.id, hovering: hovering) },
                                 onRename: { beginRenaming(group) },
                                 onDelete: { groupPendingDeletion = group }
                             )
@@ -127,71 +119,60 @@ struct ContentView: View {
         else { model.createGroup(named: groupName) }
     }
 
-    private func updateGroupHover(_ groupID: UUID, hovering: Bool) {
-        groupDismissTask?.cancel()
-        if hovering {
-            activeGroupID = groupID
-        } else {
-            groupDismissTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled, activeGroupID == groupID else { return }
-                activeGroupID = nil
-            }
-        }
-    }
 }
 
 private struct ScriptGroupRow: View {
     @EnvironmentObject private var model: ScriptLibrary
     @State private var isDropTarget = false
+    @State private var isExpanded = false
     let group: ScriptGroup
-    @Binding var isPresented: Bool
-    let onHover: (Bool) -> Void
-    let onPopoverHover: (Bool) -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: isDropTarget ? "folder.fill.badge.plus" : "folder.fill")
-                .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
-                .font(.title3)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(group.name)
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(groupScripts.isEmpty ? "Нет скриптов" : "\(groupScripts.count) скриптов")
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if groupScripts.isEmpty {
+                Text("Перетащите сюда скрипт или выберите группу в меню строки")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+                    .padding(.leading, 6)
+            } else {
+                ForEach(groupScripts) { script in
+                    GroupScriptRow(script: script)
+                }
             }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-            Menu {
-                Button("Переименовать…", action: onRename)
-                Button("Удалить группу…", role: .destructive, action: onDelete)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 20, height: 20)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: isDropTarget ? "folder.fill.badge.plus" : (isExpanded ? "folder.fill" : "folder"))
+                    .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(group.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(groupScripts.isEmpty ? "Нет скриптов" : "\(groupScripts.count) скриптов")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Menu {
+                    Button("Переименовать…", action: onRename)
+                    Button("Удалить группу…", role: .destructive, action: onDelete)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 20, height: 20)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isDropTarget ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06))
-        }
-        .onHover { hovering in
-            onHover(hovering)
-        }
-        .popover(isPresented: $isPresented, arrowEdge: .leading) {
-            GroupScriptsPopover(group: group)
-                .environmentObject(model)
-                .onHover(perform: onPopoverHover)
         }
         .dropDestination(for: String.self) { scriptIDs, _ in
             guard let scriptID = scriptIDs.first,
@@ -201,51 +182,10 @@ private struct ScriptGroupRow: View {
         } isTargeted: { isDropTarget = $0 }
         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
         .listRowBackground(Color.clear)
-        .help("Наведите, чтобы открыть группу. Перетащите сюда скрипт, чтобы добавить его.")
+        .help("Нажмите, чтобы раскрыть группу. Перетащите сюда скрипт, чтобы добавить его.")
     }
 
     private var groupScripts: [ScriptItem] { model.scripts(in: group) }
-}
-
-private struct GroupScriptsPopover: View {
-    @EnvironmentObject private var model: ScriptLibrary
-    let group: ScriptGroup
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Label(group.name, systemImage: "folder.fill")
-                    .font(.headline)
-                Spacer()
-                Text("\(scripts.count)")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-            .padding(12)
-            Divider()
-            if scripts.isEmpty {
-                ContentUnavailableView(
-                    "Группа пуста",
-                    systemImage: "tray",
-                    description: Text("Перетащите скрипт на группу или выберите её в меню строки.")
-                )
-                .frame(width: 360, height: 180)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(scripts) { script in
-                            GroupScriptRow(script: script)
-                        }
-                    }
-                    .padding(8)
-                }
-                .frame(width: 400)
-                .frame(minHeight: 100, maxHeight: 420)
-            }
-        }
-    }
-
-    private var scripts: [ScriptItem] { model.scripts(in: group) }
 }
 
 private struct GroupScriptRow: View {
