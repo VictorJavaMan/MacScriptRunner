@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: ScriptLibrary
+    @AppStorage("lastExpandedScriptGroupID") private var lastExpandedScriptGroupID = ""
     @State private var editingGroupID: UUID?
     @State private var groupName = ""
     @State private var showingGroupEditor = false
@@ -26,6 +27,7 @@ struct ContentView: View {
                         ForEach(model.groups) { group in
                             ScriptGroupRow(
                                 group: group,
+                                isExpanded: groupExpansionBinding(for: group.id),
                                 onRename: { beginRenaming(group) },
                                 onDelete: { groupPendingDeletion = group }
                             )
@@ -93,7 +95,12 @@ struct ContentView: View {
             )
         ) {
             Button("Удалить группу", role: .destructive) {
-                if let group = groupPendingDeletion { model.deleteGroup(group.id) }
+                if let group = groupPendingDeletion {
+                    model.deleteGroup(group.id)
+                    if lastExpandedScriptGroupID == group.id.uuidString {
+                        lastExpandedScriptGroupID = ""
+                    }
+                }
                 groupPendingDeletion = nil
             }
             Button("Отмена", role: .cancel) { groupPendingDeletion = nil }
@@ -118,14 +125,27 @@ struct ContentView: View {
         if let editingGroupID { model.renameGroup(editingGroupID, to: groupName) }
         else { model.createGroup(named: groupName) }
     }
+
+    private func groupExpansionBinding(for groupID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { lastExpandedScriptGroupID == groupID.uuidString },
+            set: { isExpanded in
+                if isExpanded {
+                    lastExpandedScriptGroupID = groupID.uuidString
+                } else if lastExpandedScriptGroupID == groupID.uuidString {
+                    lastExpandedScriptGroupID = ""
+                }
+            }
+        )
+    }
 }
 
 private struct ScriptGroupRow: View {
     @EnvironmentObject private var model: ScriptLibrary
     @Environment(\.colorScheme) private var colorScheme
     @State private var isDropTarget = false
-    @State private var isExpanded = false
     let group: ScriptGroup
+    @Binding var isExpanded: Bool
     let onRename: () -> Void
     let onDelete: () -> Void
 
