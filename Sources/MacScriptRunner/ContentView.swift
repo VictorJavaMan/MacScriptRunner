@@ -502,6 +502,7 @@ private final class RightClickNSView: NSView {
 
 private struct TerminalOutputView: View {
     @EnvironmentObject private var model: ScriptLibrary
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @AppStorage("terminalLineWrapping") private var terminalLineWrapping = true
     @State private var terminalInput = ""
@@ -528,6 +529,12 @@ private struct TerminalOutputView: View {
 
                     Button("Копировать только результат") {
                         copyToPasteboard(outputWithoutServiceLines)
+                    }
+
+                    Divider()
+
+                    Button("Копировать вывод как изображение") {
+                        copyOutputAsImage()
                     }
                 } label: {
                     Image(systemName: "doc.on.doc")
@@ -615,6 +622,55 @@ private struct TerminalOutputView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        showCopyConfirmation()
+    }
+
+    private func copyOutputAsImage() {
+        let horizontalPadding: CGFloat = 24
+        let verticalPadding: CGFloat = 22
+        let contentWidth: CGFloat = 1_152
+        let font = NSFont.monospacedSystemFont(ofSize: terminalFontSize, weight: .regular)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        paragraphStyle.lineSpacing = 2
+
+        let isDark = colorScheme == .dark
+        let foreground = isDark ? NSColor(calibratedWhite: 0.92, alpha: 1) : NSColor(calibratedWhite: 0.12, alpha: 1)
+        let background = isDark ? NSColor(calibratedWhite: 0.075, alpha: 1) : NSColor(calibratedWhite: 0.97, alpha: 1)
+        let attributedOutput = NSAttributedString(
+            string: model.output,
+            attributes: [
+                .font: font,
+                .foregroundColor: foreground,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+        let textBounds = attributedOutput.boundingRect(
+            with: NSSize(width: contentWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        let imageSize = NSSize(
+            width: contentWidth + horizontalPadding * 2,
+            height: max(80, ceil(textBounds.height) + verticalPadding * 2)
+        )
+        let image = NSImage(size: imageSize)
+        image.lockFocus()
+        background.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: imageSize)).fill()
+        attributedOutput.draw(
+            with: NSRect(
+                x: horizontalPadding,
+                y: verticalPadding,
+                width: contentWidth,
+                height: ceil(textBounds.height)
+            ),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        image.unlockFocus()
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([image])
         showCopyConfirmation()
     }
 
