@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct MacScriptRunnerApp: App {
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var model = ScriptLibrary()
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
 
@@ -13,7 +14,14 @@ struct MacScriptRunnerApp: App {
                 .frame(minWidth: 900, minHeight: 560)
         }
         .commands {
-            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .newItem) {
+                Button("Новый скрипт…") {
+                    if let scriptID = model.createScript() {
+                        openWindow(id: "script-editor", value: scriptID)
+                    }
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
             CommandMenu("Скрипты") {
                 Button("Обновить список") { model.reload() }
                     .keyboardShortcut("r", modifiers: .command)

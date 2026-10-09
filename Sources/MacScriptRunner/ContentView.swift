@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @EnvironmentObject private var model: ScriptLibrary
     @AppStorage("lastExpandedScriptGroupID") private var lastExpandedScriptGroupID = ""
     @State private var editingGroupID: UUID?
@@ -44,6 +45,18 @@ struct ContentView: View {
                     Text("\(model.scripts.count) скриптов")
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Button {
+                        if let scriptID = model.createScript() {
+                            openWindow(id: "script-editor", value: scriptID)
+                        }
+                    } label: {
+                        Image(systemName: "doc.badge.plus")
+                            .frame(width: 14, height: 14)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(width: 30, height: 26)
+                    .help("Создать скрипт")
                     Button { beginCreatingGroup() } label: {
                         Image(systemName: "folder.badge.plus")
                             .frame(width: 14, height: 14)

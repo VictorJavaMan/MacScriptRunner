@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 struct ScriptItem: Identifiable, Hashable {
     let url: URL
@@ -77,6 +78,40 @@ final class ScriptLibrary: ObservableObject {
         folderURLs.append(contentsOf: newFolders)
         saveFolders()
         reload()
+    }
+
+    func createScript() -> String? {
+        let panel = NSSavePanel()
+        panel.title = "Создать shell-скрипт"
+        panel.prompt = "Создать"
+        panel.nameFieldStringValue = "new-script.sh"
+        panel.allowedContentTypes = [UTType(filenameExtension: "sh") ?? .plainText]
+        panel.allowsOtherFileTypes = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = scripts.first(where: { $0.id == selectedScriptID })?.url.deletingLastPathComponent() ?? folderURLs.first
+        guard panel.runModal() == .OK, let chosenURL = panel.url else { return nil }
+        let url = (chosenURL.pathExtension.lowercased() == "sh"
+                   ? chosenURL : chosenURL.appendingPathExtension("sh")).standardizedFileURL
+        do {
+            // Never overwrite an existing script when creating a new one.
+            let template = "#!/bin/sh\n\n# Ваш скрипт\n"
+            try Data(template.utf8).write(to: url, options: .withoutOverwriting)
+            let folder = url.deletingLastPathComponent()
+            if !folderURLs.contains(where: { $0.path == folder.path }) {
+                folderURLs.append(folder)
+                saveFolders()
+            }
+            reload()
+            selectedScriptID = url.path
+            return url.path
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Не удалось создать скрипт"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.runModal()
+            return nil
+        }
     }
 
     func removeFolder(_ folder: URL) {
