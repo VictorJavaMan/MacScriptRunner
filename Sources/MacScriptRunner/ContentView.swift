@@ -351,10 +351,11 @@ private struct ScriptRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 7) {
             Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
-                .frame(width: 16, height: 30)
+                .frame(width: 16, height: 24)
                 .contentShape(Rectangle())
                 .draggable(script.id) {
                     HStack(spacing: 8) {
@@ -368,7 +369,7 @@ private struct ScriptRow: View {
             Button {
                 model.selectedScriptID = script.id
             } label: {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(script.name)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
@@ -384,23 +385,26 @@ private struct ScriptRow: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                    }
+                    HStack(spacing: 6) {
                         if model.folderURLs.count > 1 {
                             Label(script.folderName, systemImage: "folder")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
                                 .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(script.url.deletingLastPathComponent().path)
+                        }
+                        if let lastRunDate = model.lastRunDate(for: script) {
+                            Label {
+                                Text(lastRunDate, format: .dateTime.day().month().hour().minute())
+                            } icon: {
+                                Image(systemName: "clock")
+                            }
+                            .fixedSize()
+                            .help(lastRunDate.formatted(date: .complete, time: .complete))
                         }
                     }
-                    if let lastRunDate = model.lastRunDate(for: script) {
-                        Label {
-                            Text(lastRunDate, format: .dateTime.day().month().year().hour().minute().second())
-                        } icon: {
-                            Image(systemName: "clock")
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -414,19 +418,24 @@ private struct ScriptRow: View {
                     noteFieldIsFocused = true
                 }
             )
-            if !model.groups.isEmpty {
-                ScriptGroupMenu(script: script)
+            HStack(spacing: 4) {
+                if !model.groups.isEmpty {
+                    ScriptGroupMenu(script: script)
+                        .frame(width: 24, height: 24)
+                }
+                Button { model.toggle(script) } label: {
+                    Image(systemName: model.runningScriptID == script.id ? "stop.fill" : "play.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(model.runningScriptID == script.id ? Color.red : Color.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .help(model.runningScriptID == script.id ? "Остановить" : "Запустить")
             }
-            Button { model.toggle(script) } label: {
-                Image(systemName: model.runningScriptID == script.id ? "stop.fill" : "play.fill")
-                    .frame(width: 24, height: 24)
-                    .foregroundStyle(model.runningScriptID == script.id ? Color.red : Color.accentColor)
-            }
-            .buttonStyle(.borderless)
-            .help(model.runningScriptID == script.id ? "Остановить" : "Запустить")
+            .fixedSize()
         }
         .padding(.horizontal, 9)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background {
             if isDropTarget {
