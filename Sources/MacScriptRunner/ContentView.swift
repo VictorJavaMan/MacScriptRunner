@@ -24,7 +24,8 @@ struct ContentView: View {
                         Button("Добавить папки") { model.chooseFolder() }
                     }
                 } else {
-                    List {
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 4) {
                         ForEach(model.groups) { group in
                             ScriptGroupRow(
                                 group: group,
@@ -32,12 +33,19 @@ struct ContentView: View {
                                 onRename: { beginRenaming(group) },
                                 onDelete: { groupPendingDeletion = group }
                             )
+                            .padding(.leading, 10)
                         }
                         ForEach(model.ungroupedScripts) { script in
                             ScriptRow(script: script)
                         }
+                        }
+                        .padding(.leading, 2)
+                        // A permanent gutter keeps the scrollbar away from row controls.
+                        .padding(.trailing, 12)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(OverlayListScroller())
                     }
-                    .listStyle(.sidebar)
                 }
 
                 Divider()
@@ -150,6 +158,40 @@ struct ContentView: View {
                 }
             }
         )
+    }
+}
+
+// Configure only the containing list, without changing the terminal or global preferences.
+private struct OverlayListScroller: NSViewRepresentable {
+    func makeNSView(context: Context) -> ScrollerConfigurationView {
+        ScrollerConfigurationView()
+    }
+
+    func updateNSView(_ nsView: ScrollerConfigurationView, context: Context) {
+        nsView.configureScroller()
+    }
+
+    final class ScrollerConfigurationView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            configureScroller()
+        }
+
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            configureScroller()
+        }
+
+        func configureScroller() {
+            DispatchQueue.main.async { [weak self] in
+                guard let scrollView = self?.enclosingScrollView else { return }
+                scrollView.scrollerStyle = .overlay
+                scrollView.autohidesScrollers = true
+                scrollView.verticalScroller?.controlSize = .small
+            }
+        }
     }
 }
 
