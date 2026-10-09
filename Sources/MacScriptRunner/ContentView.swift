@@ -209,7 +209,7 @@ private struct ScriptGroupRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     ForEach(groupScripts) { script in
-                        GroupScriptRow(script: script)
+                        ScriptRow(script: script)
                             .padding(.leading, 22)
                     }
                 }
@@ -580,7 +580,7 @@ private struct TerminalOutputView: View {
                     Image(systemName: "arrow.up.circle.fill")
                 }
                 .buttonStyle(.borderless)
-                .disabled(!model.isSelectedScriptRunning || terminalInput.isEmpty)
+                .disabled(!model.isSelectedScriptRunning)
                 .help("Отправить ввод")
             }
             .padding(.horizontal, 14)
@@ -611,7 +611,7 @@ private struct TerminalOutputView: View {
     }
 
     private func sendTerminalInput() {
-        guard !terminalInput.isEmpty else { return }
+        guard model.isSelectedScriptRunning else { return }
         model.sendInput(terminalInput)
         terminalInput = ""
         inputIsFocused = true

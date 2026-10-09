@@ -186,6 +186,19 @@ final class ScriptLibrary: ObservableObject {
     }
 
     func moveScript(withID sourceID: String, to targetID: String) {
+        if let groupIndex = groups.firstIndex(where: { $0.scriptIDs.contains(targetID) }) {
+            guard sourceID != targetID,
+                  let script = scripts.first(where: { $0.id == sourceID }) else { return }
+            if !groups[groupIndex].scriptIDs.contains(sourceID) {
+                assign(script, to: groups[groupIndex].id)
+            }
+            guard let sourceIndex = groups[groupIndex].scriptIDs.firstIndex(of: sourceID),
+                  let targetIndex = groups[groupIndex].scriptIDs.firstIndex(of: targetID) else { return }
+            groups[groupIndex].scriptIDs.remove(at: sourceIndex)
+            groups[groupIndex].scriptIDs.insert(sourceID, at: min(targetIndex, groups[groupIndex].scriptIDs.count))
+            saveGroups()
+            return
+        }
         guard sourceID != targetID,
               let sourceIndex = scripts.firstIndex(where: { $0.id == sourceID }),
               let targetIndex = scripts.firstIndex(where: { $0.id == targetID }) else { return }
