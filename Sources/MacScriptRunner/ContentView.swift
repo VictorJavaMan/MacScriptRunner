@@ -370,16 +370,18 @@ private struct ScriptRow: View {
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(script.name)
-                        .font(.headline)
+                        .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                     if isEditingNote {
                         TextField("Примечание", text: note)
                             .textFieldStyle(.plain)
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .focused($noteFieldIsFocused)
                             .onSubmit { finishEditingNote() }
                     } else {
                         Text(model.note(for: script).isEmpty ? "Без примечания" : model.note(for: script))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         if model.folderURLs.count > 1 {
