@@ -8,15 +8,35 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Папка со скриптами") {
-                HStack {
-                    Text(model.folderPath)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Выбрать…") { model.chooseFolder() }
+            Section("Папки со скриптами") {
+                if model.folderURLs.isEmpty {
+                    Text("Папки не добавлены")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.folderURLs, id: \.path) { folder in
+                        HStack(spacing: 10) {
+                            Image(systemName: "folder")
+                                .foregroundStyle(.secondary)
+                            Text(folder.path)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button(role: .destructive) {
+                                model.removeFolder(folder)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Удалить папку из списка")
+                        }
+                    }
                 }
-                Text("В список добавляются файлы с расширением .sh. Изменения появятся после возврата в приложение или обновления списка.")
+                Button {
+                    model.chooseFolder()
+                } label: {
+                    Label("Добавить папки…", systemImage: "folder.badge.plus")
+                }
+                Text("Можно выбрать сразу несколько папок. В общий список добавляются файлы с расширением .sh; сами папки и файлы не изменяются.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -54,6 +74,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 560, height: 390)
+        .frame(width: 620, height: 480)
     }
 }

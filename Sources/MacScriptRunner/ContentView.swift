@@ -16,11 +16,11 @@ struct ContentView: View {
                     ContentUnavailableView {
                         Label("Нет скриптов", systemImage: "terminal")
                     } description: {
-                        Text(model.folderURL == nil
-                             ? "Выберите папку в настройках приложения."
-                             : "В выбранной папке нет файлов .sh")
+                        Text(model.folderURLs.isEmpty
+                             ? "Добавьте одну или несколько папок в настройках приложения."
+                             : "В добавленных папках нет файлов .sh")
                     } actions: {
-                        Button("Выбрать папку") { model.chooseFolder() }
+                        Button("Добавить папки") { model.chooseFolder() }
                     }
                 } else {
                     List {
@@ -67,7 +67,7 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .frame(width: 30, height: 26)
-                    .help("Выбрать папку")
+                    .help("Добавить папки")
                 }
                 .padding(10)
             }
@@ -249,6 +249,12 @@ private struct GroupScriptRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if model.folderURLs.count > 1 {
+                        Label(script.folderName, systemImage: "folder")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                     if let lastRunDate = model.lastRunDate(for: script) {
                         Label {
                             Text(lastRunDate, format: .dateTime.day().month().year().hour().minute().second())
@@ -376,6 +382,12 @@ private struct ScriptRow: View {
                         Text(model.note(for: script).isEmpty ? "Без примечания" : model.note(for: script))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                        if model.folderURLs.count > 1 {
+                            Label(script.folderName, systemImage: "folder")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
                     }
                     if let lastRunDate = model.lastRunDate(for: script) {
                         Label {

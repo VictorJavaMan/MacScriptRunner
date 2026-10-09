@@ -5,6 +5,7 @@ struct ScriptItem: Identifiable, Hashable {
     let url: URL
     var id: String { url.path }
     var name: String { url.deletingPathExtension().lastPathComponent }
+    var folderName: String { url.deletingLastPathComponent().lastPathComponent }
 }
 
 struct ScriptGroup: Identifiable, Codable, Hashable {
@@ -25,6 +26,7 @@ final class ScriptLibrary: ObservableObject {
 
     @Published private(set) var scripts: [ScriptItem] = []
     @Published private(set) var groups: [ScriptGroup] = []
+    @Published private(set) var folderURLs: [URL] = []
     @Published var selectedScriptID: String? {
         didSet { updateDisplayedOutput() }
     }
@@ -41,21 +43,17 @@ final class ScriptLibrary: ObservableObject {
     private var persistenceTask: Task<Void, Never>?
     private let defaults = UserDefaults.standard
     private let folderKey = "scriptsFolderPath"
+    private let folderPathsKey = "scriptsFolderPaths"
     private let notesKey = "scriptNotes"
     private let orderKey = "scriptOrder"
     private let groupsKey = "scriptGroups"
 
-    var folderURL: URL? {
-        guard let path = defaults.string(forKey: folderKey), !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path, isDirectory: true)
-    }
-
-    var folderPath: String { folderURL?.path ?? "Папка не выбрана" }
     var isSelectedScriptRunning: Bool {
         selectedScriptID != nil && selectedScriptID == runningScriptID
     }
 
     init() {
+        loadFolders()
         loadGroups()
         loadPersistedOutputs()
         reload()
@@ -63,30 +61,44 @@ final class ScriptLibrary: ObservableObject {
 
     func chooseFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Выберите папку со скриптами"
-        panel.prompt = "Выбрать"
+        panel.title = "Добавьте папки со скриптами"
+        panel.prompt = "Добавить"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        if let folderURL { panel.directoryURL = folderURL }
+        panel.allowsMultipleSelection = true
+        if let lastFolder = folderURLs.last { panel.directoryURL = lastFolder }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        defaults.set(url.path, forKey: folderKey)
+        guard panel.runModal() == .OK else { return }
+        let existingPaths = Set(folderURLs.map(\.path))
+        let newFolders = panel.urls
+            .map(\.standardizedFileURL)
+            .filter { !existingPaths.contains($0.path) }
+        guard !newFolders.isEmpty else { return }
+        folderURLs.append(contentsOf: newFolders)
+        saveFolders()
+        reload()
+    }
+
+    func removeFolder(_ folder: URL) {
+        folderURLs.removeAll { $0.standardizedFileURL.path == folder.standardizedFileURL.path }
+        saveFolders()
         reload()
     }
 
     func reload() {
-        guard let folderURL else {
+        guard !folderURLs.isEmpty else {
             scripts = []
             selectedScriptID = nil
             return
         }
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isHiddenKey]
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: folderURL,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        )) ?? []
+        let urls = folderURLs.flatMap { folderURL in
+            (try? FileManager.default.contentsOfDirectory(
+                at: folderURL,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            )) ?? []
+        }
 
         let discoveredScripts = urls.filter { url in
             let values = try? url.resourceValues(forKeys: keys)
@@ -351,6 +363,26 @@ final class ScriptLibrary: ObservableObject {
 
     private func saveCurrentOrder() {
         defaults.set(scripts.map(\.id), forKey: orderKey)
+    }
+
+    private func loadFolders() {
+        var paths = defaults.stringArray(forKey: folderPathsKey) ?? []
+        if paths.isEmpty,
+           let legacyPath = defaults.string(forKey: folderKey),
+           !legacyPath.isEmpty {
+            paths = [legacyPath]
+        }
+        var seenPaths = Set<String>()
+        folderURLs = paths.compactMap { path in
+            let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+            return seenPaths.insert(url.path).inserted ? url : nil
+        }
+        saveFolders()
+    }
+
+    private func saveFolders() {
+        defaults.set(folderURLs.map(\.path), forKey: folderPathsKey)
+        defaults.removeObject(forKey: folderKey)
     }
 
     private func loadGroups() {
