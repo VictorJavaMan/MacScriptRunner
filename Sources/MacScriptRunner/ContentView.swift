@@ -223,7 +223,7 @@ private struct ScriptGroupRow: View {
                 } else {
                     ForEach(groupScripts) { script in
                         ScriptRow(script: script)
-                            .padding(.leading, 22)
+                            .padding(.leading, 10)
                     }
                 }
             }
@@ -447,7 +447,8 @@ private struct ScriptRow: View {
             }
             .fixedSize()
         }
-        .padding(.horizontal, 9)
+        .padding(.leading, 5)
+        .padding(.trailing, 9)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background {
@@ -465,6 +466,9 @@ private struct ScriptRow: View {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(Color.accentColor.opacity(colorScheme == .dark ? 0.18 : 0.12))
                     }
+            } else {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.12), lineWidth: 1)
             }
         }
         .onChange(of: noteFieldIsFocused) { _, hasFocus in
@@ -473,7 +477,7 @@ private struct ScriptRow: View {
         .onChange(of: model.selectedScriptID) { _, selectedID in
             if selectedID != script.id { finishEditingNote() }
         }
-        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+        .listRowInsets(EdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 6))
         .listRowBackground(Color.clear)
         .dropDestination(for: String.self) { draggedIDs, _ in
             guard let draggedID = draggedIDs.first else { return false }
