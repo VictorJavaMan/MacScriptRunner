@@ -11,7 +11,7 @@ cd "$ROOT_DIR"
 mkdir -p "$ROOT_DIR/.cache/clang" "$ROOT_DIR/.cache/swiftpm"
 CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.cache/clang" \
 SWIFTPM_MODULECACHE_OVERRIDE="$ROOT_DIR/.cache/clang" \
-swift build -c release --disable-sandbox --cache-path "$ROOT_DIR/.cache/swiftpm"
+swift build -c release --build-system native --disable-sandbox --cache-path "$ROOT_DIR/.cache/swiftpm"
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"

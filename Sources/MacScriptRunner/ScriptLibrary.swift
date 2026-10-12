@@ -46,6 +46,18 @@ final class ScriptLibrary: ObservableObject {
     private let folderKey = "scriptsFolderPath"
     private let folderPathsKey = "scriptsFolderPaths"
     private let notesKey = "scriptNotes"
+    private let argumentsKey = "scriptArguments"
+
+    func arguments(for id: String) -> String {
+        (defaults.dictionary(forKey: argumentsKey) as? [String: String])?[id] ?? ""
+    }
+
+    func setArguments(_ value: String, for id: String) {
+        objectWillChange.send()
+        var values = defaults.dictionary(forKey: argumentsKey) as? [String: String] ?? [:]
+        values[id] = value
+        defaults.set(values, forKey: argumentsKey)
+    }
     private let orderKey = "scriptOrder"
     private let groupsKey = "scriptGroups"
 
@@ -247,6 +259,11 @@ final class ScriptLibrary: ObservableObject {
     func scriptWasRenamed(from oldURL: URL, to newURL: URL) {
         let oldID = oldURL.path
         let newID = newURL.path
+        var savedArguments = defaults.dictionary(forKey: argumentsKey) as? [String: String] ?? [:]
+        if let value = savedArguments.removeValue(forKey: oldID) {
+            savedArguments[newID] = value
+            defaults.set(savedArguments, forKey: argumentsKey)
+        }
 
         var allNotes = notes()
         if let note = allNotes.removeValue(forKey: oldID) {
@@ -290,12 +307,23 @@ final class ScriptLibrary: ObservableObject {
     }
 
     func run(_ script: ScriptItem) {
+        let extraArguments: [String]
+        do {
+            extraArguments = try Self.parseArguments(arguments(for: script.id))
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Некорректные аргументы"
+            alert.informativeText = "Закройте кавычки и не оставляйте обратный слеш в конце строки."
+            alert.runModal()
+            return
+        }
         stopRunningScript()
-        let launch = launchCommand(for: script.url)
+        var launch = launchCommand(for: script.url)
+        launch.arguments += extraArguments
         selectedScriptID = script.id
         lastRunDatesByScriptID[script.id] = Date()
         setOutput(
-            "$ \(([launch.executable.path] + launch.arguments).joined(separator: " "))\n\n",
+            "$ \(([launch.executable.path] + launch.arguments).map(Self.quoteArgument).joined(separator: " "))\n\n",
             for: script.id
         )
         terminationStatusesByScriptID.removeValue(forKey: script.id)
@@ -489,6 +517,45 @@ final class ScriptLibrary: ObservableObject {
         } catch {
             // A persistence failure must not interrupt a running script.
         }
+    }
+
+    private static func quoteArgument(_ value: String) -> String {
+        if !value.isEmpty && value.allSatisfy({ $0.isLetter || $0.isNumber || "_./:-=".contains($0) }) { return value }
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    // Split argv without evaluating shell commands, variables or substitutions.
+    static func parseArguments(_ input: String) throws -> [String] {
+        var result: [String] = []
+        var token = ""
+        var quote: Character?
+        var escaped = false
+        var started = false
+        for character in input {
+            if escaped {
+                token.append(character)
+                escaped = false
+            } else if character == "\\" && quote != "'" {
+                escaped = true
+                started = true
+            } else if let activeQuote = quote {
+                if character == activeQuote { quote = nil }
+                else { token.append(character) }
+            } else if character == "'" || character == "\"" {
+                quote = character
+                started = true
+            } else if character.isWhitespace {
+                if started { result.append(token); token = ""; started = false }
+            } else {
+                token.append(character)
+                started = true
+            }
+        }
+        guard quote == nil && !escaped else {
+            throw NSError(domain: "ScriptArguments", code: 1)
+        }
+        if started { result.append(token) }
+        return result
     }
 
     private func launchCommand(for scriptURL: URL) -> (executable: URL, arguments: [String]) {

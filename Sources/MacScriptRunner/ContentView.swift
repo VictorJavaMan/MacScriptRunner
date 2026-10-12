@@ -588,6 +588,7 @@ private struct TerminalOutputView: View {
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @AppStorage("terminalLineWrapping") private var terminalLineWrapping = true
     @State private var terminalInput = ""
+    @State private var showingArguments = false
     @State private var didCopyOutput = false
     @FocusState private var inputIsFocused: Bool
 
@@ -625,11 +626,36 @@ private struct TerminalOutputView: View {
                 .fixedSize()
                 .disabled(model.output.isEmpty || model.runningScriptID != nil)
                 .help("Копировать вывод. Выделенный фрагмент также можно скопировать сочетанием ⌘C")
+                Button {
+                    showingArguments.toggle()
+                } label: {
+                    Label("Аргументы", systemImage: showingArguments ? "chevron.up" : "chevron.down")
+                }
+                .help(showingArguments ? "Скрыть аргументы" : "Показать аргументы запуска")
                 Button("Очистить") { model.clearOutput() }
                     .disabled(model.runningScriptID != nil)
             }
             .padding(12)
             Divider()
+            if showingArguments {
+            HStack(spacing: 8) {
+                Text("Аргументы:")
+                    .foregroundStyle(.secondary)
+                TextField("", text: Binding(
+                    get: { model.selectedScriptID.map { model.arguments(for: $0) } ?? "" },
+                    set: { value in
+                        if let id = model.selectedScriptID { model.setArguments(value, for: id) }
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .disabled(model.selectedScriptID == nil || model.isSelectedScriptRunning)
+                .help("Только параметры, без имени скрипта. Значения с пробелами заключайте в кавычки. Сохраняются для каждого скрипта.")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Divider()
+            }
             TerminalOutputTextView(
                 text: model.output,
                 fontSize: terminalFontSize,
