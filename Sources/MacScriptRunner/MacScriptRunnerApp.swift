@@ -5,14 +5,16 @@ struct MacScriptRunnerApp: App {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model: ScriptLibrary
     @StateObject private var telegram: TelegramBot
-    @StateObject private var power = PowerManager()
+    @StateObject private var power: PowerManager
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
 
     init() {
         let library = ScriptLibrary()
         _model = StateObject(wrappedValue: library)
         // Created eagerly so the bot starts at launch, not when Settings is first shown.
-        _telegram = StateObject(wrappedValue: TelegramBot(library: library))
+        let bot = TelegramBot(library: library)
+        _telegram = StateObject(wrappedValue: bot)
+        _power = StateObject(wrappedValue: PowerManager(library: library, bot: bot))
     }
 
     var body: some Scene {

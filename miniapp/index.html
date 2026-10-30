@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MacScriptRunner</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-secondary-bg-color, #f1f1f4);
+    --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #ffffff));
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --header: var(--tg-theme-section-header-text-color, var(--tg-theme-hint-color, #6d6d72));
+    --danger: var(--tg-theme-destructive-text-color, #e53935);
+    --sep: color-mix(in srgb, var(--hint) 25%, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.tg) { --bg: #000; --card: #1c1c1e; --text: #f2f2f7; --hint: #8e8e93; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 12px 16px 96px; }
+  header { display: flex; align-items: center; gap: 12px; margin: 4px 0 12px; }
+  header h1 { font-size: 20px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stop { border: 0; border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 14px;
+          background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+  .search { width: 100%; border: 0; border-radius: 10px; padding: 10px 12px; font: inherit;
+            background: var(--card); color: var(--text); outline: none; margin-bottom: 16px; }
+  .section { margin-bottom: 16px; }
+  .section-title { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none;
+                   color: var(--header); font: inherit; font-size: 13px; text-transform: uppercase;
+                   letter-spacing: .03em; padding: 0 4px 6px; text-align: left; }
+  .section-title .count { margin-left: auto; text-transform: none; }
+  .chevron { transition: transform .15s; display: inline-block; }
+  .collapsed .chevron { transform: rotate(-90deg); }
+  .collapsed .items { display: none; }
+  .items { background: var(--card); border-radius: 12px; overflow: hidden; }
+  .row { display: block; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left;
+         padding: 11px 14px; border-top: 1px solid var(--sep); }
+  .row:first-child { border-top: 0; }
+  .row:active { background: color-mix(in srgb, var(--hint) 15%, transparent); }
+  .name { font-weight: 500; }
+  .note { color: var(--hint); font-size: 14px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis;
+          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .empty, .hint { color: var(--hint); font-size: 14px; padding: 8px 4px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; }
+  .card h2 { margin: 0 0 6px; font-size: 20px; word-break: break-word; }
+  label { display: block; color: var(--header); font-size: 13px; margin: 18px 4px 6px; }
+  .args { width: 100%; border: 0; border-radius: 10px; padding: 12px; font: 15px/1.3 ui-monospace, Menlo, monospace;
+          background: var(--card); color: var(--text); outline: none; }
+  .primary { display: none; width: 100%; margin-top: 16px; border: 0; border-radius: 12px; padding: 14px;
+             font: inherit; font-weight: 600; background: var(--accent); color: var(--accent-text); }
+  .no-tg .primary { display: block; }
+  .error { color: var(--danger); font-size: 14px; padding: 8px 4px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="listView">
+    <header>
+      <h1 id="host">MacScriptRunner</h1>
+      <button class="stop" id="stopButton" type="button">■ Остановить</button>
+    </header>
+    <input class="search" id="search" type="search" placeholder="Поиск скрипта" autocomplete="off">
+    <div id="list"></div>
+    <div class="hint" id="footer"></div>
+  </section>
+
+  <section id="detailView" hidden>
+    <div class="card">
+      <h2 id="detailName"></h2>
+      <div class="note" id="detailNote"></div>
+    </div>
+    <label for="args">Аргументы</label>
+    <input class="args" id="args" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="как сохранено на Mac">
+    <div class="hint">Пусто — аргументы, сохранённые на Mac. «-» — без аргументов. Значения с пробелами — в кавычках.</div>
+    <button class="primary" id="runButton" type="button">▶️ Запустить</button>
+    <div class="hint">Если Mac спит, скрипт запустится сразу после пробуждения. Вывод придёт в чат.</div>
+  </section>
+  <div class="error" id="error" hidden></div>
+</main>
+
+<script>
+(() => {
+  const tg = window.Telegram && window.Telegram.WebApp;
+  // initData is empty for Mini Apps opened from a keyboard button, so detect Telegram by its platform
+  // or by the launch parameters it adds to the URL.
+  const inTelegram = !!(tg && ((tg.platform && tg.platform !== 'unknown')
+    || /tgWebApp(Platform|Version|ThemeParams)/.test(location.hash + location.search)));
+  document.documentElement.classList.toggle('tg', inTelegram);
+  document.body.classList.toggle('no-tg', !inTelegram);
+  if (tg) { tg.ready(); tg.expand(); }
+
+  const $ = (id) => document.getElementById(id);
+  const storage = {
+    get(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+    set(key, value) { try { localStorage.setItem(key, value); } catch (e) {} },
+  };
+
+  let catalog = null;
+  let current = null;
+  const collapsed = new Set(JSON.parse(storage.get('msr.collapsed') || '[]'));
+
+  function showError(text) {
+    const box = $('error');
+    box.textContent = text;
+    box.hidden = !text;
+  }
+
+  function base64UrlToBytes(value) {
+    let s = value.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    const binary = atob(s);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  async function decodeCatalog(raw) {
+    const kind = raw[0];
+    const bytes = base64UrlToBytes(raw.slice(1));
+    let text;
+    if (kind === 'z') {
+      if (!('DecompressionStream' in window)) throw new Error('Обновите Telegram: он не умеет распаковывать данные пульта.');
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      text = await new Response(stream).text();
+    } else {
+      text = new TextDecoder().decode(bytes);
+    }
+    return JSON.parse(text);
+  }
+
+  // The catalog travels inside the button URL; the last one is cached on the phone.
+  async function loadCatalog() {
+    const raw = new URLSearchParams(location.search).get('d');
+    if (raw) {
+      try {
+        const decoded = await decodeCatalog(raw);
+        storage.set('msr.catalog', JSON.stringify(decoded));
+        return decoded;
+      } catch (e) {
+        showError(e.message || 'Не удалось прочитать список скриптов.');
+      }
+    }
+    const cached = storage.get('msr.catalog');
+    if (cached) { try { return JSON.parse(cached); } catch (e) {} }
+    return null;
+  }
+
+  function sections() {
+    const scripts = catalog.s || [];
+    const groups = catalog.g || [];
+    const grouped = new Set();
+    const result = groups.map(([name, indices]) => {
+      indices.forEach((i) => grouped.add(i));
+      return { key: 'g:' + name, name, items: indices };
+    });
+    const rest = scripts.map((_, i) => i).filter((i) => !grouped.has(i));
+    if (rest.length) result.push({ key: 'rest', name: groups.length ? 'Без группы' : 'Скрипты', items: rest });
+    return result;
+  }
+
+  function renderList() {
+    const list = $('list');
+    list.textContent = '';
+    if (!catalog) {
+      list.innerHTML = '<div class="empty">Нет данных. Отправьте боту /keyboard и откройте пульт кнопкой «📱 Пульт» внизу чата.</div>';
+      return;
+    }
+    $('host').textContent = catalog.h || 'MacScriptRunner';
+    const query = $('search').value.trim().toLowerCase();
+    let shown = 0;
+    for (const section of sections()) {
+      const items = section.items.filter((i) => {
+        const script = catalog.s[i];
+        return script && (!query || (script[0] + ' ' + script[1]).toLowerCase().includes(query));
+      });
+      if (!items.length) continue;
+      shown += items.length;
+      const box = document.createElement('div');
+      box.className = 'section' + (!query && collapsed.has(section.key) ? ' collapsed' : '');
+      const title = document.createElement('button');
+      title.type = 'button';
+      title.className = 'section-title';
+      title.innerHTML = '<span class="chevron">▾</span><span></span><span class="count"></span>';
+      title.children[1].textContent = section.name;
+      title.children[2].textContent = items.length;
+      title.addEventListener('click', () => {
+        if (collapsed.has(section.key)) collapsed.delete(section.key); else collapsed.add(section.key);
+        storage.set('msr.collapsed', JSON.stringify([...collapsed]));
+        box.classList.toggle('collapsed');
+      });
+      const rows = document.createElement('div');
+      rows.className = 'items';
+      for (const i of items) {
+        const [name, note] = catalog.s[i];
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'row';
+        row.innerHTML = '<div class="name"></div><div class="note"></div>';
+        row.children[0].textContent = name;
+        row.children[1].textContent = note || '';
+        row.children[1].hidden = !note;
+        row.addEventListener('click', () => openDetail(i));
+        rows.appendChild(row);
+      }
+      box.append(title, rows);
+      list.appendChild(box);
+    }
+    if (!shown) list.innerHTML = '<div class="empty">Ничего не найдено.</div>';
+    $('footer').textContent = catalog.t
+      ? 'Показаны не все скрипты: список слишком длинный для кнопки Telegram.'
+      : 'Список обновляется, когда бот присылает новый пульт (/keyboard).';
+    if (tg) $('footer').textContent += ' · Telegram ' + (tg.platform || '?') + ' ' + (tg.version || '');
+  }
+
+  function openDetail(index) {
+    current = catalog.s[index];
+    const [name, note, id] = current;
+    $('detailName').textContent = name;
+    $('detailNote').textContent = note || '';
+    $('args').value = storage.get('msr.args.' + id) || '';
+    $('listView').hidden = true;
+    $('detailView').hidden = false;
+    showError('');
+    window.scrollTo(0, 0);
+    if (tg) {
+      tg.BackButton.show();
+      tg.MainButton.setText('▶️ Запустить');
+      tg.MainButton.show();
+    }
+  }
+
+  function closeDetail() {
+    current = null;
+    $('detailView').hidden = true;
+    $('listView').hidden = false;
+    if (tg) { tg.BackButton.hide(); tg.MainButton.hide(); }
+  }
+
+  function send(command) {
+    if (!tg || typeof tg.sendData !== 'function') {
+      showError('Откройте пульт кнопкой «📱 Пульт» внизу чата с ботом.');
+      return;
+    }
+    try {
+      if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+      tg.sendData(JSON.stringify(command)); // closes the Mini App; Telegram delivers it to the bot
+    } catch (e) {
+      showError('Команду можно отправить, только если пульт открыт кнопкой «📱 Пульт» внизу чата.');
+    }
+  }
+
+  function runCurrent() {
+    if (!current) return;
+    const id = current[2];
+    const args = $('args').value.trim();
+    storage.set('msr.args.' + id, args);
+    const command = { a: 'run', s: id };
+    if (args) command.r = args;
+    send(command);
+  }
+
+  function confirmStop() {
+    const question = 'Остановить выполняющийся на Mac скрипт?';
+    if (tg && tg.isVersionAtLeast && tg.isVersionAtLeast('6.2')) {
+      tg.showConfirm(question, (ok) => { if (ok) send({ a: 'stop' }); });
+    } else if (window.confirm(question)) {
+      send({ a: 'stop' });
+    }
+  }
+
+  $('search').addEventListener('input', renderList);
+  $('stopButton').addEventListener('click', confirmStop);
+  $('runButton').addEventListener('click', runCurrent);
+  $('args').addEventListener('keydown', (e) => { if (e.key === 'Enter') runCurrent(); });
+  if (tg) {
+    tg.BackButton.onClick(closeDetail);
+    tg.MainButton.onClick(runCurrent);
+  }
+
+  loadCatalog().then((value) => { catalog = value; renderList(); });
+})();
+</script>
+</body>
+</html>

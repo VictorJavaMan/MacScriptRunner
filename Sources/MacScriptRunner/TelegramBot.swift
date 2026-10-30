@@ -31,6 +31,12 @@ private struct TGMessage: Decodable {
     let chat: TGChat
     let from: TGUser?
     let text: String?
+    let webAppData: TGWebAppData?
+}
+
+/// Data sent by the Mini App with `Telegram.WebApp.sendData`.
+private struct TGWebAppData: Decodable {
+    let data: String
 }
 
 private struct TGChat: Decodable {
@@ -101,6 +107,20 @@ private struct TelegramError: Error {
     let retryAfter: Int?
 }
 
+/// How the bot shows the result of a finished script.
+enum TelegramOutputFormat: String, CaseIterable, Identifiable {
+    case image, text, both
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .image: "Картинка"
+        case .text: "Текст"
+        case .both: "Текст и картинка"
+        }
+    }
+}
+
 /// Telegram user that entered the access code and may control the Mac.
 struct TelegramAuthorizedUser: Identifiable, Hashable {
     let id: Int64
@@ -155,6 +175,11 @@ final class TelegramBot: ObservableObject {
         static let offset = "telegramUpdateOffset"
         static let code = "remoteAccessCode"
         static let keepAwake = "telegramKeepAwake"
+        static let outputFormat = "telegramOutputFormat"
+        static let pending = "telegramPendingArguments"
+        static let labels = "telegramKeyboardLabels"
+        static let keyboardSignature = "telegramKeyboardSignature"
+        static let miniAppURL = "telegramMiniAppURL"
     }
 
     private static let maxShownCharacters = 3_300
@@ -170,6 +195,9 @@ final class TelegramBot: ObservableObject {
         }
     }
     /// Prevents idle sleep while the bot is on (the display may still turn off).
+    @Published var outputFormat: TelegramOutputFormat {
+        didSet { defaults.set(outputFormat.rawValue, forKey: Keys.outputFormat) }
+    }
     @Published var keepAwake: Bool {
         didSet {
             guard oldValue != keepAwake else { return }
@@ -185,6 +213,8 @@ final class TelegramBot: ObservableObject {
     @Published private(set) var hasToken: Bool
     @Published private(set) var authorizedUsers: [TelegramAuthorizedUser] = []
     @Published private(set) var accessCode: String
+    /// HTTPS address of the published miniapp/index.html; empty when the Mini App is not used.
+    @Published private(set) var miniAppURL: String
 
     let hostName: String
 
@@ -204,9 +234,24 @@ final class TelegramBot: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var flushInFlight: Task<Void, Never>?
-    private var startedAt = Date()
+    private let startedAt = Date()
+    private var didDropBacklog = false
+    /// Last time somebody talked to the bot; the power guard keeps the Mac awake for a while after it.
+    private(set) var lastActivity = Date.distantPast
     private var liveRuns: [String: LiveRun] = [:]
-    private var pendingArguments: [Int64: String] = [:]
+    /// Chats waiting for arguments (chat → script path). Persisted so the choice survives restarts.
+    private var pendingArguments: [Int64: String] = [:] {
+        didSet {
+            var stored: [String: String] = [:]
+            for (chatID, scriptID) in pendingArguments { stored[String(chatID)] = scriptID }
+            defaults.set(stored, forKey: Keys.pending)
+        }
+    }
+    /// Reply-keyboard label → script path. The keyboard lives on the phone, so pressing a button works
+    /// even while the Mac sleeps: the message waits in Telegram and is resolved through this cache on wake.
+    private var keyboardLabels: [String: String] = [:]
+    private var keyboardDirty = false
+    private var isPushingKeyboard = false
     private var failedAttempts: [Int64: Int] = [:]
     private var lockedUntil: [Int64: Date] = [:]
     private var activity: NSObjectProtocol?
@@ -234,8 +279,24 @@ final class TelegramBot: ObservableObject {
         self.hasToken = !storedToken.isEmpty
         self.isEnabled = UserDefaults.standard.bool(forKey: Keys.enabled)
         self.keepAwake = UserDefaults.standard.object(forKey: Keys.keepAwake) as? Bool ?? true
+        self.miniAppURL = UserDefaults.standard.string(forKey: Keys.miniAppURL) ?? ""
+        self.outputFormat = UserDefaults.standard.string(forKey: Keys.outputFormat)
+            .flatMap(TelegramOutputFormat.init(rawValue:)) ?? .image
         loadUsers()
         defaults.set(accessCode, forKey: Keys.code)
+        let storedPending = defaults.dictionary(forKey: Keys.pending) as? [String: String] ?? [:]
+        pendingArguments = Dictionary(uniqueKeysWithValues: storedPending.compactMap { key, value in
+            Int64(key).map { ($0, value) }
+        })
+        keyboardLabels = defaults.dictionary(forKey: Keys.labels) as? [String: String] ?? [:]
+        catalogChanged()
+
+        library.objectWillChange
+            .throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.catalogChanged() }
+            }
+            .store(in: &cancellables)
 
         library.outputEvents
             .sink { [weak self] event in
@@ -267,6 +328,7 @@ final class TelegramBot: ObservableObject {
         TokenKeychain.write(newToken)
         hasToken = !newToken.isEmpty
         defaults.removeObject(forKey: Keys.offset)
+        didDropBacklog = false
         restart()
     }
 
@@ -280,6 +342,24 @@ final class TelegramBot: ObservableObject {
 
     private static func generateCode() -> String {
         String(format: "%09ld", Int.random(in: 0..<1_000_000_000))
+    }
+
+    /// Returns an error message when the address is not usable.
+    func setMiniAppURL(_ rawValue: String) -> String? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty {
+            guard let components = URLComponents(string: value),
+                  components.scheme?.lowercased() == "https",
+                  components.host?.isEmpty == false else {
+                return "Нужен адрес вида https://…"
+            }
+        }
+        guard value != miniAppURL else { return nil }
+        miniAppURL = value
+        defaults.set(value, forKey: Keys.miniAppURL)
+        keyboardDirty = true
+        Task { await pushKeyboardIfNeeded() }
+        return nil
     }
 
     func removeUser(_ user: TelegramAuthorizedUser) {
@@ -306,7 +386,6 @@ final class TelegramBot: ObservableObject {
             return
         }
         activeToken = token
-        startedAt = Date()
         beginActivity()
         statusText = "Подключение к Telegram…"
         pollTask = Task { [weak self] in
@@ -327,14 +406,20 @@ final class TelegramBot: ObservableObject {
                         ["command": "stop", "description": "Остановить скрипт"],
                         ["command": "cancel", "description": "Отменить ввод аргументов"],
                         ["command": "logout", "description": "Отключить этот аккаунт"],
+                        ["command": "keyboard", "description": "Показать пульт со скриптами"],
                         ["command": "help", "description": "Справка"]
                     ]
                     let _: TGIgnored = try await call("setMyCommands", ["commands": commands])
+                }
+                if !didDropBacklog {
                     // Commands sent while the app was closed are dropped instead of being executed now.
+                    // Commands sent while the Mac slept are kept: they run after the next wake-up.
                     let backlog: TGUpdateBatch = try await call("getUpdates", ["offset": -1, "timeout": 0])
                     if let last = backlog.lastUpdateID { defaults.set(last + 1, forKey: Keys.offset) }
+                    didDropBacklog = true
                 }
                 statusText = "Работает: @\(botUsername ?? "bot")"
+                await pushKeyboardIfNeeded()
                 let offset = defaults.integer(forKey: Keys.offset)
                 var parameters: [String: Any] = ["timeout": 50, "allowed_updates": ["message", "callback_query"]]
                 if offset > 0 { parameters["offset"] = offset }
@@ -373,13 +458,18 @@ final class TelegramBot: ObservableObject {
     // MARK: - Updates
 
     private func handle(_ update: TGUpdate) async {
+        lastActivity = Date()
         if let callback = update.callbackQuery {
             await handleCallback(callback)
-        } else if let message = update.message, let text = message.text {
+        } else if let message = update.message {
             if let date = message.date, Date(timeIntervalSince1970: TimeInterval(date)) < startedAt.addingTimeInterval(-60) {
                 return
             }
-            await handleText(text, message: message)
+            if let webAppData = message.webAppData {
+                await handleWebAppData(webAppData.data, message: message)
+            } else if let text = message.text {
+                await handleText(text, message: message)
+            }
         }
     }
 
@@ -397,9 +487,23 @@ final class TelegramBot: ObservableObject {
             let word = trimmed.split(separator: " ").first.map(String.init) ?? trimmed
             let command = (word.split(separator: "@").first.map(String.init) ?? word).lowercased()
             switch command {
-            case "/start", "/scripts", "/list", "/menu":
+            case "/start":
+                pendingArguments[chatID] = nil
+                await sendKeyboard(chatID: chatID)
+                await sendMenu(chatID: chatID)
+            case "/scripts", "/list", "/menu":
                 pendingArguments[chatID] = nil
                 await sendMenu(chatID: chatID)
+            case "/keyboard":
+                await sendKeyboard(chatID: chatID)
+            case "/run":
+                let rest = String(trimmed.dropFirst(word.count)).trimmingCharacters(in: .whitespaces)
+                if let match = matchKeyboardLabel(rest) ?? matchKeyboardLabel(Self.labelPrefix + rest) {
+                    pendingArguments[chatID] = nil
+                    await runScript(match.scriptID, chatID: chatID, arguments: match.arguments)
+                } else {
+                    await send(chatID, "Скрипт не найден. Формат: <code>/run имя аргументы</code>")
+                }
             case "/stop":
                 stopRunning(chatID: chatID)
             case "/status":
@@ -416,6 +520,13 @@ final class TelegramBot: ObservableObject {
             return
         }
 
+        // A pressed reply-keyboard button (possibly sent while the Mac was asleep).
+        if let match = matchKeyboardLabel(trimmed) {
+            pendingArguments[chatID] = nil
+            await runScript(match.scriptID, chatID: chatID, arguments: match.arguments)
+            return
+        }
+
         if let scriptID = pendingArguments.removeValue(forKey: chatID) {
             await runScript(scriptID, chatID: chatID, arguments: trimmed == "-" ? "" : text)
             return
@@ -426,6 +537,36 @@ final class TelegramBot: ObservableObject {
             return
         }
         await send(chatID, "Сейчас ничего не выполняется. /scripts — список скриптов.")
+    }
+
+    /// Commands from the Mini App. They may have waited in Telegram while the Mac was asleep.
+    private func handleWebAppData(_ raw: String, message: TGMessage) async {
+        guard message.chat.type == "private", let user = message.from, isAuthorized(user.id) else { return }
+        let chatID = message.chat.id
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+              let action = object["a"] as? String else {
+            await send(chatID, "Не удалось разобрать команду из пульта.")
+            return
+        }
+        switch action {
+        case "run":
+            guard let shortID = object["s"] as? String else { return }
+            if script(forShortID: shortID) == nil { library.reload() }
+            guard let script = script(forShortID: shortID) else {
+                await send(chatID, "Скрипт не найден. Отправьте /keyboard, чтобы обновить пульт.")
+                return
+            }
+            pendingArguments[chatID] = nil
+            // No "r" means the arguments saved on the Mac; "-" means none.
+            let arguments = (object["r"] as? String).map {
+                $0.trimmingCharacters(in: .whitespaces) == "-" ? "" : $0
+            }
+            await runScript(script.id, chatID: chatID, arguments: arguments)
+        case "stop":
+            stopRunning(chatID: chatID)
+        default:
+            await send(chatID, "Неизвестная команда пульта. Обновите его: /keyboard")
+        }
     }
 
     private func handleLogin(_ text: String, user: TGUser, chatID: Int64) async {
@@ -458,6 +599,7 @@ final class TelegramBot: ObservableObject {
         authorizedUsers.append(TelegramAuthorizedUser(id: user.id, name: user.displayName))
         saveUsers()
         await send(chatID, "✅ Доступ открыт. Теперь вы можете запускать скрипты на «\(escape(hostName))».\n\n" + Self.helpText)
+        await sendKeyboard(chatID: chatID)
         await sendMenu(chatID: chatID)
     }
 
@@ -600,13 +742,69 @@ final class TelegramBot: ObservableObject {
             await send(chatID, "У скрипта <b>\(escape(script.name))</b> нет сохранённого вывода.")
             return
         }
-        await send(chatID, outputText(header: "📄 <b>\(escape(script.name))</b>", output: output))
-        await sendFullOutputIfNeeded(script, output: output, chatID: chatID)
+        let header = "📄 <b>\(escape(script.name))</b>"
+        await sendResult(of: script, output: output, header: header, caption: "📄 \(script.name)", chatID: chatID)
+    }
+
+    /// Sends the result in the chosen format: text, image(s) or both.
+    private func sendResult(of script: ScriptItem, output: String, header: String, caption: String, chatID: Int64) async {
+        if outputFormat != .image {
+            await send(chatID, outputText(header: header, output: output))
+        } else {
+            await send(chatID, header)
+        }
+        await deliverExtras(of: script, output: output, caption: caption, chatID: chatID)
+    }
+
+    /// Images (unless the format is text) and the full output as a file when it does not fit.
+    private func deliverExtras(of script: ScriptItem, output: String, caption: String, chatID: Int64) async {
+        var imagesTruncated = false
+        if outputFormat != .text {
+            imagesTruncated = await sendOutputImages(output, caption: caption, chatID: chatID)
+        }
+        if outputFormat != .image || imagesTruncated {
+            await sendFullOutputIfNeeded(script, output: output, chatID: chatID)
+        }
+    }
+
+    /// Returns true when the output was too long and only its end was drawn.
+    private func sendOutputImages(_ output: String, caption: String, chatID: Int64) async -> Bool {
+        let text = Self.stripANSI(TerminalImageRenderer.resultText(from: output))
+        let rendered = TerminalImageRenderer.pngPages(for: text, style: TerminalImageRenderer.appStyle())
+        guard !rendered.pages.isEmpty else { return false }
+        let fullCaption = rendered.truncated ? caption + " (конец вывода)" : caption
+        do {
+            if rendered.pages.count == 1 {
+                try await sendMultipart("sendPhoto", chatID: chatID, fields: ["caption": fullCaption], files: [
+                    MultipartFile(field: "photo", fileName: "output.png", contentType: "image/png", data: rendered.pages[0])
+                ])
+            } else {
+                var media: [[String: String]] = []
+                var files: [MultipartFile] = []
+                for (index, page) in rendered.pages.enumerated() {
+                    var item = ["type": "photo", "media": "attach://page\(index)"]
+                    if index == 0 { item["caption"] = fullCaption }
+                    media.append(item)
+                    files.append(MultipartFile(field: "page\(index)", fileName: "output-\(index + 1).png", contentType: "image/png", data: page))
+                }
+                let mediaJSON = String(decoding: (try? JSONSerialization.data(withJSONObject: media)) ?? Data("[]".utf8), as: UTF8.self)
+                try await sendMultipart("sendMediaGroup", chatID: chatID, fields: ["media": mediaJSON], files: files)
+            }
+        } catch {
+            // Photos have size limits (e.g. a very wide table); fall back to PNG files without compression.
+            for (index, page) in rendered.pages.enumerated() {
+                try? await sendMultipart("sendDocument", chatID: chatID, fields: ["caption": index == 0 ? fullCaption : ""], files: [
+                    MultipartFile(field: "document", fileName: "output-\(index + 1).png", contentType: "image/png", data: page)
+                ])
+            }
+        }
+        return rendered.truncated
     }
 
     // MARK: - Running scripts
 
     private func runScript(_ scriptID: String, chatID: Int64, arguments: String?) async {
+        if library.script(withID: scriptID) == nil { library.reload() }
         guard let script = library.script(withID: scriptID) else {
             await send(chatID, "Скрипт не найден. /scripts — обновить список.")
             return
@@ -703,11 +901,12 @@ final class TelegramBot: ObservableObject {
         await edit(
             chatID: run.chatID,
             messageID: run.messageID,
-            text: outputText(header: header, output: output),
+            text: outputFormat == .image ? header : outputText(header: header, output: output),
             keyboard: [[button("🔁 Ещё раз", "r:\(sid)"), button("📜 К скрипту", "s:\(sid)")], [button("📋 Все скрипты", "l")]]
         )
         if let script = library.script(withID: scriptID) {
-            await sendFullOutputIfNeeded(script, output: output, chatID: run.chatID)
+            let plainHeader = header.replacingOccurrences(of: "<b>", with: "").replacingOccurrences(of: "</b>", with: "")
+            await deliverExtras(of: script, output: output, caption: Self.unescape(plainHeader), chatID: run.chatID)
         }
     }
 
@@ -726,7 +925,7 @@ final class TelegramBot: ObservableObject {
 
     private func outputText(header: String, output: String) -> String {
         var clean = Self.stripANSI(output).replacingOccurrences(of: "\r\n", with: "\n")
-        clean = clean.trimmingCharacters(in: .newlines)
+        clean = Self.compactTables(clean).trimmingCharacters(in: .newlines)
         for budget in stride(from: Self.maxShownCharacters, through: 300, by: -500) {
             let tail = clean.count > budget ? "…\n" + String(clean.suffix(budget)) : clean
             let body = escape(tail.isEmpty ? "(вывода пока нет)" : tail)
@@ -735,10 +934,103 @@ final class TelegramBot: ObservableObject {
         return "\(header)\n<pre>…</pre>"
     }
 
+    private static func unescape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&amp;", with: "&")
+    }
+
     private func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    // MARK: - Tables
+
+    private static let tableSeparator = try? NSRegularExpression(pattern: "^\\s*-{3,}(\\s+-{3,})+\\s*$")
+
+    private static func isTableSeparator(_ line: String) -> Bool {
+        guard let tableSeparator else { return false }
+        return tableSeparator.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
+    }
+
+    /// Fixed-width tables (a header and a "----- -----" line) wrap badly on a phone. Every row becomes
+    /// two short lines: the first column, then the other columns joined with " · ".
+    /// Only the Telegram view changes; the Mac app and the full-output file keep the original text.
+    private static func compactTables(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        var result: [String] = []
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            if index + 1 < lines.count, isTableSeparator(lines[index + 1]),
+               !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                let columns = columnStarts(lines[index + 1])
+                result += compactRow(tableCells(line, columns: columns))
+                result.append("")
+                var rowIndex = index + 2
+                while rowIndex < lines.count {
+                    let row = lines[rowIndex]
+                    if row.trimmingCharacters(in: .whitespaces).isEmpty || isTableSeparator(row) || row.hasPrefix("[") {
+                        break
+                    }
+                    result += compactRow(tableCells(row, columns: columns))
+                    rowIndex += 1
+                }
+                index = rowIndex
+                continue
+            }
+            result.append(line)
+            index += 1
+        }
+        return result.joined(separator: "\n")
+    }
+
+    private static func compactRow(_ cells: [String]) -> [String] {
+        let values = cells.map { $0.isEmpty ? "–" : $0 }
+        guard let first = values.first else { return [] }
+        let rest = values.dropFirst()
+        return rest.isEmpty ? [first] : [first, "  " + rest.joined(separator: " · ")]
+    }
+
+    private static func columnStarts(_ separator: String) -> [Int] {
+        var starts: [Int] = []
+        var previous: Character = " "
+        for (offset, character) in separator.enumerated() {
+            if character == "-" && previous != "-" { starts.append(offset) }
+            previous = character
+        }
+        return starts
+    }
+
+    /// Splits a row into cells by column positions; a value wider than its column shifts the rest of the row.
+    private static func tableCells(_ line: String, columns: [Int]) -> [String] {
+        var cells = Array(repeating: [String](), count: columns.count)
+        var shift = 0
+        var tokenStart: Int?
+        var token = ""
+        func flush(end: Int) {
+            guard let start = tokenStart else { return }
+            var column = 0
+            for (k, position) in columns.enumerated() where position <= start - shift { column = k }
+            cells[column].append(token)
+            if column + 1 < columns.count, end - shift > columns[column + 1] - 1 {
+                shift = end - (columns[column + 1] - 1)
+            }
+            tokenStart = nil
+            token = ""
+        }
+        for (offset, character) in line.enumerated() {
+            if character.isWhitespace {
+                flush(end: offset)
+            } else {
+                if tokenStart == nil { tokenStart = offset }
+                token.append(character)
+            }
+        }
+        flush(end: line.count)
+        return cells.map { $0.joined(separator: " ") }
     }
 
     private static func stripANSI(_ text: String) -> String {
@@ -767,13 +1059,179 @@ final class TelegramBot: ObservableObject {
 
     private static let helpText = """
     <b>Как пользоваться</b>
-    /scripts — список скриптов и групп
-    Нажмите на скрипт → ▶️ Запустить. Вывод обновляется в сообщении в реальном времени.
+    «📱 Пульт» внизу чата — список скриптов с группами и аргументами. Работает, даже когда Mac спит: скрипт запустится, как только Mac проснётся.
+    /run имя аргументы — запуск с аргументами
+    /scripts — подробный список с группами, аргументами и последним выводом
+    /keyboard — показать пульт заново
+    Вывод обновляется в сообщении в реальном времени.
     Пока скрипт работает, любое обычное сообщение отправляется ему в stdin.
     /status — что сейчас выполняется
     /stop — остановить скрипт
     /logout — отключить этот аккаунт
     """
+
+    // MARK: - Reply keyboard (works while the Mac sleeps)
+
+    private struct KeyboardEntry {
+        let label: String
+        let scriptID: String
+    }
+
+    private static let labelPrefix = "▶️ "
+
+    /// Current scripts in the Mac app's order: groups first, then ungrouped. Labels are unique.
+    private func currentKeyboardEntries() -> [KeyboardEntry] {
+        var ordered: [ScriptItem] = []
+        for group in library.groups { ordered += library.scripts(in: group) }
+        ordered += library.ungroupedScripts
+        let nameCounts = Dictionary(ordered.map { ($0.name, 1) }, uniquingKeysWith: +)
+        var used = Set<String>()
+        var entries: [KeyboardEntry] = []
+        for script in ordered.prefix(150) {
+            var label = Self.labelPrefix + String(script.name.prefix(50))
+            if (nameCounts[script.name] ?? 0) > 1 { label += " (\(script.folderName))" }
+            var unique = label
+            var counter = 2
+            while used.contains(unique) {
+                unique = "\(label) \(counter)"
+                counter += 1
+            }
+            used.insert(unique)
+            entries.append(KeyboardEntry(label: unique, scriptID: script.id))
+        }
+        return entries
+    }
+
+    private func catalogChanged() {
+        let entries = currentKeyboardEntries()
+        // Old labels stay resolvable (a button pressed before a rename still works) unless reused.
+        var labels = keyboardLabels
+        for entry in entries { labels[entry.label] = entry.scriptID }
+        if labels.count > 500 {
+            let current = Set(entries.map { $0.label })
+            labels = labels.filter { current.contains($0.key) }
+        }
+        if labels != keyboardLabels {
+            keyboardLabels = labels
+            defaults.set(labels, forKey: Keys.labels)
+        }
+        let signature = keyboardSignature(entries)
+        if signature != defaults.string(forKey: Keys.keyboardSignature) {
+            keyboardDirty = true
+            Task { await pushKeyboardIfNeeded() }
+        }
+    }
+
+    /// Sends the updated keyboard to every authorized chat once the bot is online.
+    private func pushKeyboardIfNeeded() async {
+        guard keyboardDirty, !isPushingKeyboard, botUsername != nil, activeToken != nil else { return }
+        isPushingKeyboard = true
+        defer { isPushingKeyboard = false }
+        let signature = keyboardSignature(currentKeyboardEntries())
+        for user in authorizedUsers {
+            await sendKeyboard(chatID: user.id, text: "📱 Пульт обновлён.")
+        }
+        defaults.set(signature, forKey: Keys.keyboardSignature)
+        // The list may have changed again while sending.
+        keyboardDirty = keyboardSignature(currentKeyboardEntries()) != signature
+    }
+
+    private func keyboardSignature(_ entries: [KeyboardEntry]) -> String {
+        // Labels are kept only for /run; the keyboard itself shows just the Mini App button.
+        "miniapp:" + (miniAppLaunchURL() ?? "")
+    }
+
+    // MARK: - Mini App
+
+    /// Mini App address with the script catalog embedded, so the app works without contacting the Mac.
+    private func miniAppLaunchURL() -> String? {
+        guard !miniAppURL.isEmpty, var components = URLComponents(string: miniAppURL) else { return nil }
+        guard let encoded = encodedCatalog() else { return miniAppURL }
+        var items = (components.queryItems ?? []).filter { $0.name != "d" }
+        items.append(URLQueryItem(name: "d", value: encoded))
+        components.queryItems = items
+        return components.string
+    }
+
+    /// "j" + base64url(JSON) or "z" + base64url(raw DEFLATE), whichever fits the URL budget first.
+    private func encodedCatalog() -> String? {
+        let attempts: [(notes: Bool, limit: Int)] = [(true, 500), (false, 500), (false, 120), (false, 60), (false, 30)]
+        for attempt in attempts {
+            guard let json = catalogPayload(includeNotes: attempt.notes, maxScripts: attempt.limit) else { return nil }
+            let plain = "j" + Self.base64URL(json)
+            if plain.count <= 3_500 { return plain }
+            if let compressed = try? (json as NSData).compressed(using: .zlib) {
+                let packed = "z" + Self.base64URL(compressed as Data)
+                if packed.count <= 3_500 { return packed }
+            }
+        }
+        return nil
+    }
+
+    private func catalogPayload(includeNotes: Bool, maxScripts: Int) -> Data? {
+        let scripts = Array(library.scripts.prefix(maxScripts))
+        var indexByID: [String: Int] = [:]
+        var items: [[String]] = []
+        for script in scripts {
+            indexByID[script.id] = items.count
+            let note = includeNotes ? String(library.note(for: script).prefix(200)) : ""
+            items.append([script.name, note, Self.shortID(script.id)])
+        }
+        var groups: [[Any]] = []
+        for group in library.groups {
+            let indices: [Int] = library.scripts(in: group).compactMap { indexByID[$0.id] }
+            groups.append([group.name, indices])
+        }
+        let payload: [String: Any] = [
+            "v": 1,
+            "h": hostName,
+            "s": items,
+            "g": groups,
+            "t": scripts.count < library.scripts.count
+        ]
+        return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// The chat keyboard holds a single "📱 Пульт" button that opens the Mini App.
+    /// Without a Mini App address the keyboard is removed.
+    private func sendKeyboard(chatID: Int64, text: String? = nil) async {
+        let markup: [String: Any]
+        let message: String
+        if let launchURL = miniAppLaunchURL() {
+            markup = [
+                "keyboard": [[["text": "📱 Пульт", "web_app": ["url": launchURL]]]],
+                "resize_keyboard": true,
+                "is_persistent": true,
+                "input_field_placeholder": "Аргументы или ответ скрипту"
+            ]
+            message = text ?? "📱 Пульт внизу чата открывает список скриптов. Он работает, даже когда Mac спит: "
+                + "скрипт запустится сразу после пробуждения."
+        } else {
+            markup = ["remove_keyboard": true]
+            message = "Пульт не настроен: укажите адрес Mini App в MacScriptRunner → Settings → Telegram-бот. "
+                + "Пока запускайте скрипты через /scripts или /run имя."
+        }
+        _ = try? await sendMessage(chatID, message, replyMarkup: markup)
+    }
+
+    /// Resolves "▶️ name" or "▶️ name arguments" to a script using the cached labels.
+    private func matchKeyboardLabel(_ text: String) -> (scriptID: String, arguments: String?)? {
+        guard text.hasPrefix(Self.labelPrefix) || keyboardLabels[text] != nil else { return nil }
+        if let scriptID = keyboardLabels[text] { return (scriptID, nil) }
+        // Longest label first so "▶️ deploy prod" prefers a script named "deploy prod" over "deploy".
+        for label in keyboardLabels.keys.sorted(by: { $0.count > $1.count }) where text.hasPrefix(label + " ") {
+            let arguments = String(text.dropFirst(label.count + 1)).trimmingCharacters(in: .whitespaces)
+            return (keyboardLabels[label] ?? "", arguments)
+        }
+        return nil
+    }
 
     // MARK: - Authorization
 
@@ -819,13 +1277,17 @@ final class TelegramBot: ObservableObject {
     }
 
     private func sendMessage(_ chatID: Int64, _ text: String, keyboard: Keyboard?) async throws -> TGMessage {
+        try await sendMessage(chatID, text, replyMarkup: keyboard.map { ["inline_keyboard": $0] })
+    }
+
+    private func sendMessage(_ chatID: Int64, _ text: String, replyMarkup: [String: Any]?) async throws -> TGMessage {
         var parameters: [String: Any] = [
             "chat_id": chatID,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": true
         ]
-        if let keyboard { parameters["reply_markup"] = ["inline_keyboard": keyboard] }
+        if let replyMarkup { parameters["reply_markup"] = replyMarkup }
         return try await call("sendMessage", parameters)
     }
 
@@ -848,23 +1310,39 @@ final class TelegramBot: ObservableObject {
         let _: TGIgnored? = try? await call("answerCallbackQuery", parameters)
     }
 
+    private struct MultipartFile {
+        let field: String
+        let fileName: String
+        let contentType: String
+        let data: Data
+    }
+
     private func sendDocument(chatID: Int64, fileName: String, data: Data, caption: String) async throws {
-        guard let activeToken, let url = URL(string: "https://api.telegram.org/bot\(activeToken)/sendDocument") else { return }
+        try await sendMultipart("sendDocument", chatID: chatID, fields: ["caption": caption], files: [
+            MultipartFile(field: "document", fileName: fileName, contentType: "text/plain; charset=utf-8", data: data)
+        ])
+    }
+
+    private func sendMultipart(_ method: String, chatID: Int64, fields: [String: String], files: [MultipartFile]) async throws {
+        guard let activeToken, let url = URL(string: "https://api.telegram.org/bot\(activeToken)/\(method)") else { return }
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
         func appendField(_ name: String, _ value: String) {
             body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
         }
         appendField("chat_id", String(chatID))
-        appendField("caption", caption)
-        let safeName = fileName.replacingOccurrences(of: "\"", with: "'")
-        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"document\"; filename=\"\(safeName)\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n".utf8))
-        body.append(data)
-        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        for (name, value) in fields where !value.isEmpty { appendField(name, value) }
+        for file in files {
+            let safeName = file.fileName.replacingOccurrences(of: "\"", with: "'")
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(file.field)\"; filename=\"\(safeName)\"\r\nContent-Type: \(file.contentType)\r\n\r\n".utf8))
+            body.append(file.data)
+            body.append(Data("\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)--\r\n".utf8))
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 60
+        request.timeoutInterval = 120
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
         let _: TGIgnored = try await perform(request)

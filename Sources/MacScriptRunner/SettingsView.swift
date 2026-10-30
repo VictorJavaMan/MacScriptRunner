@@ -5,6 +5,8 @@ struct SettingsView: View {
     @EnvironmentObject private var telegram: TelegramBot
     @EnvironmentObject private var power: PowerManager
     @State private var telegramTokenDraft = ""
+    @State private var miniAppURLDraft = ""
+    @State private var miniAppError: String?
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @AppStorage("terminalLineWrapping") private var terminalLineWrapping = true
@@ -63,6 +65,24 @@ struct SettingsView: View {
                     }
                     .disabled(telegramTokenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                HStack {
+                    TextField("Адрес Mini App (https://…/index.html), необязательно", text: $miniAppURLDraft)
+                        .onAppear { miniAppURLDraft = telegram.miniAppURL }
+                    Button("Сохранить") {
+                        miniAppError = telegram.setMiniAppURL(miniAppURLDraft)
+                    }
+                    .disabled(miniAppURLDraft == telegram.miniAppURL)
+                }
+                if let miniAppError {
+                    Text(miniAppError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Picker("Результат скрипта", selection: $telegram.outputFormat) {
+                    ForEach(TelegramOutputFormat.allCases) { format in
+                        Text(format.title).tag(format)
+                    }
+                }
                 LabeledContent("Код доступа") {
                     HStack(spacing: 8) {
                         Text(telegram.formattedAccessCode)
@@ -108,17 +128,27 @@ struct SettingsView: View {
                     set: { power.setLaunchAtLogin($0) }
                 ))
                 Toggle("Не засыпать при бездействии, пока бот включён", isOn: $telegram.keepAwake)
-                Toggle("Не засыпать при закрытой крышке", isOn: Binding(
-                    get: { power.sleepDisabled },
-                    set: { power.setSleepDisabled($0) }
+                Toggle("Умный режим питания (со сном на батарее)", isOn: Binding(
+                    get: { power.isGuardInstalled },
+                    set: { power.setGuardInstalled($0) }
                 ))
-                .disabled(power.isBusy)
+                .disabled(power.isWorking)
+                Picker("На батарее просыпаться", selection: $power.wakeIntervalMinutes) {
+                    ForEach(PowerManager.wakeIntervalChoices, id: \.self) { minutes in
+                        Text(minutes == 0 ? "никогда" : "каждые \(minutes) мин").tag(minutes)
+                    }
+                }
+                .disabled(!power.isGuardInstalled)
+                LabeledContent("Питание") {
+                    Text(power.powerSummary)
+                        .foregroundStyle(.secondary)
+                }
                 if let message = power.message {
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
-                Text("Во сне macOS замораживает все сторонние приложения, поэтому бот работает, только пока Mac не спит. «Не засыпать при закрытой крышке» включает системный режим pmset disablesleep (нужен пароль администратора): Mac с закрытой крышкой гасит экран, но остаётся в сети. Режим действует для всей системы, пока его не выключить. Не кладите работающий Mac в сумку, а при работе от батареи следите за зарядом.")
+                Text("Во сне macOS замораживает все сторонние приложения. Умный режим устанавливает системную службу (спросит пароль администратора): от сети Mac не засыпает даже с закрытой крышкой и бот отвечает сразу; от батареи Mac спит, но просыпается по расписанию, бот выполняет накопившиеся команды и Mac снова засыпает. Пока выполняется скрипт, Mac не уснёт (если заряд выше 10%). Выключение переключателя удаляет службу и возвращает обычный сон.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
