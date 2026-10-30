@@ -5,6 +5,7 @@ struct MacScriptRunnerApp: App {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model: ScriptLibrary
     @StateObject private var telegram: TelegramBot
+    @StateObject private var power = PowerManager()
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
 
     init() {
@@ -43,6 +44,7 @@ struct MacScriptRunnerApp: App {
             SettingsView()
                 .environmentObject(model)
                 .environmentObject(telegram)
+                .environmentObject(power)
                 .preferredColorScheme(Appearance(rawValue: appearance)?.colorScheme)
         }
 

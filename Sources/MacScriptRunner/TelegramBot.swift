@@ -154,6 +154,7 @@ final class TelegramBot: ObservableObject {
         static let users = "telegramAuthorizedUsers"
         static let offset = "telegramUpdateOffset"
         static let code = "remoteAccessCode"
+        static let keepAwake = "telegramKeepAwake"
     }
 
     private static let maxShownCharacters = 3_300
@@ -166,6 +167,17 @@ final class TelegramBot: ObservableObject {
             guard oldValue != isEnabled else { return }
             defaults.set(isEnabled, forKey: Keys.enabled)
             restart()
+        }
+    }
+    /// Prevents idle sleep while the bot is on (the display may still turn off).
+    @Published var keepAwake: Bool {
+        didSet {
+            guard oldValue != keepAwake else { return }
+            defaults.set(keepAwake, forKey: Keys.keepAwake)
+            if activity != nil {
+                endActivity()
+                beginActivity()
+            }
         }
     }
     @Published private(set) var statusText = "Выключен"
@@ -221,12 +233,25 @@ final class TelegramBot: ObservableObject {
         self.token = storedToken
         self.hasToken = !storedToken.isEmpty
         self.isEnabled = UserDefaults.standard.bool(forKey: Keys.enabled)
+        self.keepAwake = UserDefaults.standard.object(forKey: Keys.keepAwake) as? Bool ?? true
         loadUsers()
         defaults.set(accessCode, forKey: Keys.code)
 
         library.outputEvents
             .sink { [weak self] event in
                 MainActor.assumeIsolated { self?.handleOutputEvent(event) }
+            }
+            .store(in: &cancellables)
+
+        // After sleep the pending long-poll request is stale; reconnect right away.
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.isEnabled else { return }
+                    self.restart()
+                }
             }
             .store(in: &cancellables)
 
@@ -879,7 +904,7 @@ final class TelegramBot: ObservableObject {
     private func beginActivity() {
         guard activity == nil else { return }
         activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiatedAllowingIdleSystemSleep],
+            options: keepAwake ? [.userInitiated] : [.userInitiatedAllowingIdleSystemSleep],
             reason: "Telegram-бот MacScriptRunner"
         )
     }

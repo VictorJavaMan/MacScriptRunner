@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: ScriptLibrary
     @EnvironmentObject private var telegram: TelegramBot
+    @EnvironmentObject private var power: PowerManager
     @State private var telegramTokenDraft = ""
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
@@ -101,6 +102,27 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Работа в фоне") {
+                Toggle("Запускать MacScriptRunner при входе в систему", isOn: Binding(
+                    get: { power.launchAtLogin },
+                    set: { power.setLaunchAtLogin($0) }
+                ))
+                Toggle("Не засыпать при бездействии, пока бот включён", isOn: $telegram.keepAwake)
+                Toggle("Не засыпать при закрытой крышке", isOn: Binding(
+                    get: { power.sleepDisabled },
+                    set: { power.setSleepDisabled($0) }
+                ))
+                .disabled(power.isBusy)
+                if let message = power.message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Text("Во сне macOS замораживает все сторонние приложения, поэтому бот работает, только пока Mac не спит. «Не засыпать при закрытой крышке» включает системный режим pmset disablesleep (нужен пароль администратора): Mac с закрытой крышкой гасит экран, но остаётся в сети. Режим действует для всей системы, пока его не выключить. Не кладите работающий Mac в сумку, а при работе от батареи следите за зарядом.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Оформление") {
                 Picker("Тема", selection: $appearance) {
                     ForEach(Appearance.allCases) { theme in
@@ -134,6 +156,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 620, height: 680)
+        .frame(width: 620, height: 720)
+        .onAppear { power.refresh() }
     }
 }
