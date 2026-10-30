@@ -246,6 +246,7 @@ final class PowerManager: ObservableObject {
     private func tick() {
         let now = Date()
         let busy = library.runningScriptID != nil
+            || bot.needsNetworkTime
             || now.timeIntervalSince(bot.lastActivity) < 120
             || now.timeIntervalSince(lastWake) < 45
         guard busy else { return }

@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import CryptoKit
 import Foundation
+@preconcurrency import Network
 import Security
 import SystemConfiguration
 
@@ -227,7 +228,7 @@ final class TelegramBot: ObservableObject {
 
     private let library: ScriptLibrary
     private let defaults = UserDefaults.standard
-    private let session: URLSession
+    private var session: URLSession
     private let decoder: JSONDecoder
     private var token: String
     private var activeToken: String?
@@ -255,6 +256,26 @@ final class TelegramBot: ObservableObject {
     private var failedAttempts: [Int64: Int] = [:]
     private var lockedUntil: [Int64: Date] = [:]
     private var activity: NSObjectProtocol?
+
+    // Network resilience
+    private let pathMonitor = NWPathMonitor()
+    private var networkAvailable = true
+    private var pathSignature = ""
+    private var lastRestart = Date.distantPast
+    private var lastPollSuccess = Date.distantPast
+    private var lastWake = Date.distantPast
+    private var retryDelay: TimeInterval = 2
+    private var watchdogTask: Task<Void, Never>?
+    /// Messages, photos and files that are waiting for the network to come back.
+    private(set) var pendingDeliveries = 0
+
+    /// True while the Mac should stay awake for the bot: something is still being delivered,
+    /// or the bot has not reached Telegram since the last wake-up (at most 3 minutes after it).
+    var needsNetworkTime: Bool {
+        if pendingDeliveries > 0 { return true }
+        guard isEnabled, !token.isEmpty else { return false }
+        return lastPollSuccess < lastWake && Date().timeIntervalSince(lastWake) < 180
+    }
     private var cancellables = Set<AnyCancellable>()
 
     init(library: ScriptLibrary) {
@@ -267,10 +288,7 @@ final class TelegramBot: ObservableObject {
         } else {
             self.accessCode = Self.generateCode()
         }
-        let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 75
-        configuration.waitsForConnectivity = false
-        self.session = URLSession(configuration: configuration)
+        self.session = Self.makeSession()
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         self.decoder = decoder
@@ -310,13 +328,114 @@ final class TelegramBot: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, self.isEnabled else { return }
-                    self.restart()
+                    guard let self else { return }
+                    self.lastWake = Date()
+                    guard self.isEnabled else { return }
+                    self.reconnect(status: "Mac проснулся, переподключение…")
                 }
             }
             .store(in: &cancellables)
 
+        // Wi-Fi drops, a new network, VPN on/off: reconnect at once instead of waiting for a timeout.
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            let interfaces = path.availableInterfaces.map { $0.name }.joined(separator: ",")
+            let signature = "\(satisfied)|\(interfaces)|\(path.isExpensive)"
+            Task { @MainActor [weak self] in
+                self?.networkChanged(satisfied: satisfied, signature: signature)
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "MacScriptRunner.TelegramBot.network"))
+
+        // A long-poll request on a silently dead connection can hang; restart if nothing came back in time.
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(20))
+                self?.checkWatchdog()
+            }
+        }
+
         restart()
+    }
+
+    // MARK: - Network resilience
+
+    private static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 45
+        configuration.timeoutIntervalForResource = 300
+        configuration.waitsForConnectivity = false
+        configuration.httpMaximumConnectionsPerHost = 4
+        return URLSession(configuration: configuration)
+    }
+
+    private func networkChanged(satisfied: Bool, signature: String) {
+        let previous = pathSignature
+        let wasAvailable = networkAvailable
+        pathSignature = signature
+        networkAvailable = satisfied
+        guard !previous.isEmpty, signature != previous, isEnabled, !token.isEmpty else { return }
+        if !satisfied {
+            statusText = "Нет сети — переподключусь автоматически"
+        } else {
+            reconnect(status: wasAvailable ? "Сеть сменилась, переподключение…" : "Сеть появилась, переподключение…")
+        }
+    }
+
+    private func checkWatchdog() {
+        guard isEnabled, !token.isEmpty, networkAvailable, botUsername != nil else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastPollSuccess) > 80, now.timeIntervalSince(lastRestart) > 80 else { return }
+        reconnect(status: "Нет ответа от Telegram, переподключение…")
+    }
+
+    /// Drops all connections (they may belong to the old network) and starts polling again.
+    /// Deliveries in progress are retried on the new session.
+    private func reconnect(status: String) {
+        session.invalidateAndCancel()
+        session = Self.makeSession()
+        retryDelay = 2
+        restart()
+        statusText = status
+    }
+
+    private static func isTransient(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost,
+                 .cannotConnectToHost, .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff,
+                 .secureConnectionFailed, .cannotLoadFromNetwork, .cancelled, .resourceUnavailable:
+                return true
+            default:
+                return false
+            }
+        }
+        if let telegramError = error as? TelegramError {
+            guard let code = telegramError.code else { return false }
+            return code == 429 || code >= 500
+        }
+        // An HTML error page from a proxy or Telegram's front end.
+        return error is DecodingError
+    }
+
+    /// Retries an outgoing request through network outages for up to 10 minutes.
+    private func reliably<T>(_ operation: @MainActor () async throws -> T) async throws -> T {
+        pendingDeliveries += 1
+        defer { pendingDeliveries -= 1 }
+        let deadline = Date().addingTimeInterval(600)
+        var delay: TimeInterval = 2
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                guard Self.isTransient(error), Date() < deadline, isEnabled else { throw error }
+                if let telegramError = error as? TelegramError, let retryAfter = telegramError.retryAfter {
+                    delay = TimeInterval(retryAfter)
+                }
+                try? await Task.sleep(for: .seconds(delay))
+                delay = min(delay * 2, 30)
+            }
+        }
     }
 
     // MARK: - Settings
@@ -386,6 +505,7 @@ final class TelegramBot: ObservableObject {
             return
         }
         activeToken = token
+        lastRestart = Date()
         beginActivity()
         statusText = "Подключение к Telegram…"
         pollTask = Task { [weak self] in
@@ -421,10 +541,13 @@ final class TelegramBot: ObservableObject {
                 statusText = "Работает: @\(botUsername ?? "bot")"
                 await pushKeyboardIfNeeded()
                 let offset = defaults.integer(forKey: Keys.offset)
-                var parameters: [String: Any] = ["timeout": 50, "allowed_updates": ["message", "callback_query"]]
+                // A short long-poll notices a dead connection quickly after a network change.
+                var parameters: [String: Any] = ["timeout": 25, "allowed_updates": ["message", "callback_query"]]
                 if offset > 0 { parameters["offset"] = offset }
-                let batch: TGUpdateBatch = try await call("getUpdates", parameters, timeout: 70)
+                let batch: TGUpdateBatch = try await call("getUpdates", parameters, timeout: 40)
                 guard !Task.isCancelled else { return }
+                lastPollSuccess = Date()
+                retryDelay = 2
                 // Saved before handling so a crash never replays a command.
                 if let last = batch.lastUpdateID { defaults.set(last + 1, forKey: Keys.offset) }
                 for update in batch.updates {
@@ -447,10 +570,15 @@ final class TelegramBot: ObservableObject {
                     default:
                         statusText = "Ошибка Telegram: \(telegramError.message)"
                     }
+                } else if !networkAvailable {
+                    statusText = "Нет сети — переподключусь автоматически"
                 } else {
-                    statusText = "Нет связи с Telegram, повтор…"
+                    statusText = "Нет связи с Telegram, повтор через \(Int(retryDelay)) с…"
                 }
-                try? await Task.sleep(for: .seconds(5))
+                // Exponential backoff; a network change interrupts the wait through reconnect().
+                let delay = retryDelay
+                retryDelay = min(retryDelay * 2, 30)
+                try? await Task.sleep(for: .seconds(delay))
             }
         }
     }
@@ -902,7 +1030,8 @@ final class TelegramBot: ObservableObject {
             chatID: run.chatID,
             messageID: run.messageID,
             text: outputFormat == .image ? header : outputText(header: header, output: output),
-            keyboard: [[button("🔁 Ещё раз", "r:\(sid)"), button("📜 К скрипту", "s:\(sid)")], [button("📋 Все скрипты", "l")]]
+            keyboard: [[button("🔁 Ещё раз", "r:\(sid)"), button("📜 К скрипту", "s:\(sid)")], [button("📋 Все скрипты", "l")]],
+            reliable: true
         )
         if let script = library.script(withID: scriptID) {
             let plainHeader = header.replacingOccurrences(of: "<b>", with: "").replacingOccurrences(of: "</b>", with: "")
@@ -1301,10 +1430,13 @@ final class TelegramBot: ObservableObject {
         ]
         if silent { parameters["disable_notification"] = true }
         if let replyMarkup { parameters["reply_markup"] = replyMarkup }
-        return try await call("sendMessage", parameters)
+        return try await reliably { () async throws -> TGMessage in
+            try await self.call("sendMessage", parameters)
+        }
     }
 
-    private func edit(chatID: Int64, messageID: Int, text: String, keyboard: Keyboard?) async {
+    /// `reliable`: retried through network outages (final results); progress updates are not.
+    private func edit(chatID: Int64, messageID: Int, text: String, keyboard: Keyboard?, reliable: Bool = false) async {
         var parameters: [String: Any] = [
             "chat_id": chatID,
             "message_id": messageID,
@@ -1314,7 +1446,13 @@ final class TelegramBot: ObservableObject {
         ]
         if let keyboard { parameters["reply_markup"] = ["inline_keyboard": keyboard] }
         // "message is not modified" and similar errors are harmless here.
-        let _: TGIgnored? = try? await call("editMessageText", parameters)
+        if reliable {
+            _ = try? await reliably { () async throws -> TGIgnored in
+                try await self.call("editMessageText", parameters)
+            }
+        } else {
+            let _: TGIgnored? = try? await call("editMessageText", parameters)
+        }
     }
 
     private func answer(_ callback: TGCallbackQuery, text: String? = nil) async {
@@ -1358,7 +1496,9 @@ final class TelegramBot: ObservableObject {
         request.timeoutInterval = 120
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        let _: TGIgnored = try await perform(request)
+        let _: TGIgnored = try await reliably { () async throws -> TGIgnored in
+            try await self.perform(request)
+        }
     }
 
     private func call<Result: Decodable>(
