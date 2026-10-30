@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import UniformTypeIdentifiers
 
@@ -13,6 +14,14 @@ struct ScriptGroup: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
     var scriptIDs: [String]
+}
+
+/// Output changes published for the Telegram bot.
+enum ScriptOutputEvent {
+    /// The whole output was replaced; `nil` means it was cleared.
+    case replaced(scriptID: String, text: String?)
+    case appended(scriptID: String, text: String)
+    case finished(scriptID: String, status: Int32)
 }
 
 private struct PersistedTerminalState: Codable {
@@ -34,6 +43,7 @@ final class ScriptLibrary: ObservableObject {
     @Published private(set) var runningScriptID: String?
     @Published private(set) var output = ScriptLibrary.emptyOutputMessage
     @Published private(set) var terminationStatus: Int32?
+    let outputEvents = PassthroughSubject<ScriptOutputEvent, Never>()
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -307,21 +317,51 @@ final class ScriptLibrary: ObservableObject {
     }
 
     func run(_ script: ScriptItem) {
+        if let message = startScript(script) {
+            let alert = NSAlert()
+            alert.messageText = "Некорректные аргументы"
+            alert.informativeText = message
+            alert.runModal()
+        }
+    }
+
+    func script(withID id: String) -> ScriptItem? {
+        scripts.first { $0.id == id }
+    }
+
+    func storedOutput(forScriptID id: String) -> String? {
+        outputsByScriptID[id]
+    }
+
+    func storedTerminationStatus(forScriptID id: String) -> Int32? {
+        terminationStatusesByScriptID[id]
+    }
+
+    func clearOutput(forScriptID id: String) {
+        guard runningScriptID != id else { return }
+        outputsByScriptID.removeValue(forKey: id)
+        terminationStatusesByScriptID.removeValue(forKey: id)
+        outputEvents.send(.replaced(scriptID: id, text: nil))
+        updateDisplayedOutput()
+        savePersistedOutputs()
+        objectWillChange.send()
+    }
+
+    /// Starts the script without UI alerts. Returns an error message when arguments are invalid.
+    @discardableResult
+    func startScript(_ script: ScriptItem) -> String? {
         let extraArguments: [String]
         do {
             extraArguments = try Self.parseArguments(arguments(for: script.id))
         } catch {
-            let alert = NSAlert()
-            alert.messageText = "Некорректные аргументы"
-            alert.informativeText = "Закройте кавычки и не оставляйте обратный слеш в конце строки."
-            alert.runModal()
-            return
+            return "Некорректные аргументы: закройте кавычки и не оставляйте обратный слеш в конце строки."
         }
         stopRunningScript()
         var launch = launchCommand(for: script.url)
         launch.arguments += extraArguments
         selectedScriptID = script.id
         lastRunDatesByScriptID[script.id] = Date()
+        terminationStatusesByScriptID.removeValue(forKey: script.id)
         setOutput(
             "$ \(([launch.executable.path] + launch.arguments).map(Self.quoteArgument).joined(separator: " "))\n\n",
             for: script.id
@@ -354,6 +394,7 @@ final class ScriptLibrary: ObservableObject {
                 pipe.fileHandleForReading.readabilityHandler = nil
                 self.appendOutput("\n\n[Процесс завершён с кодом \(status)]\n", for: script.id)
                 self.terminationStatusesByScriptID[script.id] = status
+                self.objectWillChange.send()
                 if self.selectedScriptID == script.id { self.terminationStatus = status }
                 self.scheduleOutputPersistence()
                 if self.process === newProcess {
@@ -362,6 +403,8 @@ final class ScriptLibrary: ObservableObject {
                     self.outputPipe = nil
                     self.inputPipe = nil
                 }
+                // Sent after runningScriptID is cleared so observers see the final state.
+                self.outputEvents.send(.finished(scriptID: script.id, status: status))
             }
         }
 
@@ -374,9 +417,11 @@ final class ScriptLibrary: ObservableObject {
         } catch {
             appendOutput("Ошибка запуска: \(error.localizedDescription)\n", for: script.id)
             terminationStatusesByScriptID[script.id] = -1
+            outputEvents.send(.finished(scriptID: script.id, status: -1))
             updateDisplayedOutput()
             scheduleOutputPersistence()
         }
+        return nil
     }
 
     func stopRunningScript() {
@@ -392,6 +437,7 @@ final class ScriptLibrary: ObservableObject {
         if let selectedScriptID {
             outputsByScriptID.removeValue(forKey: selectedScriptID)
             terminationStatusesByScriptID.removeValue(forKey: selectedScriptID)
+            outputEvents.send(.replaced(scriptID: selectedScriptID, text: nil))
         }
         updateDisplayedOutput()
         savePersistedOutputs()
@@ -413,12 +459,14 @@ final class ScriptLibrary: ObservableObject {
 
     private func setOutput(_ value: String, for scriptID: String) {
         outputsByScriptID[scriptID] = value
+        outputEvents.send(.replaced(scriptID: scriptID, text: value))
         if selectedScriptID == scriptID { output = value }
         scheduleOutputPersistence()
     }
 
     private func appendOutput(_ value: String, for scriptID: String) {
         outputsByScriptID[scriptID, default: ""] += value
+        outputEvents.send(.appended(scriptID: scriptID, text: value))
         if selectedScriptID == scriptID { output = outputsByScriptID[scriptID] ?? Self.emptyOutputMessage }
         scheduleOutputPersistence()
     }

@@ -3,8 +3,16 @@ import SwiftUI
 @main
 struct MacScriptRunnerApp: App {
     @Environment(\.openWindow) private var openWindow
-    @StateObject private var model = ScriptLibrary()
+    @StateObject private var model: ScriptLibrary
+    @StateObject private var telegram: TelegramBot
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
+
+    init() {
+        let library = ScriptLibrary()
+        _model = StateObject(wrappedValue: library)
+        // Created eagerly so the bot starts at launch, not when Settings is first shown.
+        _telegram = StateObject(wrappedValue: TelegramBot(library: library))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -34,6 +42,7 @@ struct MacScriptRunnerApp: App {
         Settings {
             SettingsView()
                 .environmentObject(model)
+                .environmentObject(telegram)
                 .preferredColorScheme(Appearance(rawValue: appearance)?.colorScheme)
         }
 

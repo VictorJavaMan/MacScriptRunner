@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: ScriptLibrary
+    @EnvironmentObject private var telegram: TelegramBot
+    @State private var telegramTokenDraft = ""
     @AppStorage("appearance") private var appearance = Appearance.system.rawValue
     @AppStorage("terminalFontSize") private var terminalFontSize = 13.0
     @AppStorage("terminalLineWrapping") private var terminalLineWrapping = true
@@ -41,6 +43,64 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Telegram-бот") {
+                Toggle("Управлять скриптами через Telegram", isOn: $telegram.isEnabled)
+                LabeledContent("Статус") {
+                    Text(telegram.statusText)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                }
+                HStack {
+                    SecureField(
+                        telegram.hasToken ? "Токен сохранён — введите новый, чтобы заменить" : "Токен от @BotFather",
+                        text: $telegramTokenDraft
+                    )
+                    Button("Сохранить") {
+                        telegram.saveToken(telegramTokenDraft)
+                        telegramTokenDraft = ""
+                    }
+                    .disabled(telegramTokenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                LabeledContent("Код доступа") {
+                    HStack(spacing: 8) {
+                        Text(telegram.formattedAccessCode)
+                            .font(.system(.title3, design: .monospaced).weight(.semibold))
+                            .textSelection(.enabled)
+                        Button {
+                            telegram.regenerateAccessCode()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Сгенерировать новый код")
+                    }
+                }
+                if telegram.authorizedUsers.isEmpty {
+                    Text("Пока никто не подключён")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(telegram.authorizedUsers) { user in
+                        HStack {
+                            Image(systemName: "person.crop.circle")
+                                .foregroundStyle(.secondary)
+                            Text(user.name)
+                            Spacer()
+                            Button(role: .destructive) {
+                                telegram.removeUser(user)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Отозвать доступ")
+                        }
+                    }
+                }
+                Text("1. Создайте бота у @BotFather в Telegram и вставьте сюда его токен.\n2. Откройте бота и отправьте ему код доступа.\nБот работает из любой сети, пока Mac включён, не спит и приложение запущено. При смене кода уже подключённые аккаунты сохраняют доступ — отзывайте его в списке выше.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Оформление") {
                 Picker("Тема", selection: $appearance) {
                     ForEach(Appearance.allCases) { theme in
@@ -74,6 +134,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 620, height: 480)
+        .frame(width: 620, height: 680)
     }
 }
