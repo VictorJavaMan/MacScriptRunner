@@ -1129,7 +1129,7 @@ final class TelegramBot: ObservableObject {
         defer { isPushingKeyboard = false }
         let signature = keyboardSignature(currentKeyboardEntries())
         for user in authorizedUsers {
-            await sendKeyboard(chatID: user.id, text: "📱 Пульт обновлён.")
+            await sendKeyboard(chatID: user.id, text: "📱 Пульт", silently: true)
         }
         defaults.set(signature, forKey: Keys.keyboardSignature)
         // The list may have changed again while sending.
@@ -1201,7 +1201,9 @@ final class TelegramBot: ObservableObject {
 
     /// The chat keyboard holds a single "📱 Пульт" button that opens the Mini App.
     /// Without a Mini App address the keyboard is removed.
-    private func sendKeyboard(chatID: Int64, text: String? = nil) async {
+    /// `silently`: the keyboard is updated without leaving a message in the chat. Telegram only changes
+    /// the keyboard together with a message, so it is sent without a sound and deleted right away.
+    private func sendKeyboard(chatID: Int64, text: String? = nil, silently: Bool = false) async {
         let markup: [String: Any]
         let message: String
         if let launchURL = miniAppLaunchURL() {
@@ -1218,7 +1220,12 @@ final class TelegramBot: ObservableObject {
             message = "Пульт не настроен: укажите адрес Mini App в MacScriptRunner → Settings → Telegram-бот. "
                 + "Пока запускайте скрипты через /scripts или /run имя."
         }
-        _ = try? await sendMessage(chatID, message, replyMarkup: markup)
+        if silently {
+            guard let sent = try? await sendMessage(chatID, message, replyMarkup: markup, silent: true) else { return }
+            let _: TGIgnored? = try? await call("deleteMessage", ["chat_id": chatID, "message_id": sent.messageId])
+        } else {
+            _ = try? await sendMessage(chatID, message, replyMarkup: markup)
+        }
     }
 
     /// Resolves "▶️ name" or "▶️ name arguments" to a script using the cached labels.
@@ -1280,13 +1287,19 @@ final class TelegramBot: ObservableObject {
         try await sendMessage(chatID, text, replyMarkup: keyboard.map { ["inline_keyboard": $0] })
     }
 
-    private func sendMessage(_ chatID: Int64, _ text: String, replyMarkup: [String: Any]?) async throws -> TGMessage {
+    private func sendMessage(
+        _ chatID: Int64,
+        _ text: String,
+        replyMarkup: [String: Any]?,
+        silent: Bool = false
+    ) async throws -> TGMessage {
         var parameters: [String: Any] = [
             "chat_id": chatID,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": true
         ]
+        if silent { parameters["disable_notification"] = true }
         if let replyMarkup { parameters["reply_markup"] = replyMarkup }
         return try await call("sendMessage", parameters)
     }
