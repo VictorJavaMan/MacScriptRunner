@@ -24,7 +24,7 @@ struct ContentView: View {
                         Button("Добавить папки") { model.chooseFolder() }
                     }
                 } else {
-                    ScrollView(.vertical) {
+                    ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 4) {
                         ForEach(model.groups) { group in
                             ScriptGroupRow(
@@ -40,12 +40,13 @@ struct ContentView: View {
                         }
                         }
                         .padding(.leading, 2)
-                        // A permanent gutter keeps the scrollbar away from row controls.
-                        .padding(.trailing, 12)
+                        .padding(.trailing, 6)
                         .padding(.vertical, 4)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(OverlayListScroller())
+                        .background(HiddenListScroller())
                     }
+                    // Hidden even when "Show scroll bars: Always" is set in System Settings.
+                    .scrollIndicators(.never)
                 }
 
                 Divider()
@@ -162,7 +163,8 @@ struct ContentView: View {
 }
 
 // Configure only the containing list, without changing the terminal or global preferences.
-private struct OverlayListScroller: NSViewRepresentable {
+/// Removes the scroll bar of the script list only (the terminal keeps its own).
+private struct HiddenListScroller: NSViewRepresentable {
     func makeNSView(context: Context) -> ScrollerConfigurationView {
         ScrollerConfigurationView()
     }
@@ -188,8 +190,8 @@ private struct OverlayListScroller: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 guard let scrollView = self?.enclosingScrollView else { return }
                 scrollView.scrollerStyle = .overlay
-                scrollView.autohidesScrollers = true
-                scrollView.verticalScroller?.controlSize = .small
+                scrollView.hasVerticalScroller = false
+                scrollView.hasHorizontalScroller = false
             }
         }
     }
@@ -234,21 +236,14 @@ private struct ScriptGroupRow: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Menu {
-                    Button("Переименовать…", action: onRename)
-                    Button("Удалить группу…", role: .destructive, action: onDelete)
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .symbolRenderingMode(.monochrome)
-                        .frame(width: 20, height: 20)
-                        .foregroundColor(groupControlColor)
-                }
-                .menuStyle(.borderlessButton)
-                .tint(groupControlColor)
-                .fixedSize()
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("Переименовать…", systemImage: "pencil", action: onRename)
+                Button("Удалить группу…", systemImage: "trash", role: .destructive, action: onDelete)
+            }
             .background {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isDropTarget ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.06))
@@ -256,7 +251,7 @@ private struct ScriptGroupRow: View {
 
             if isExpanded {
                 if groupScripts.isEmpty {
-                    Text("Перетащите сюда скрипт или выберите группу в меню строки")
+                    Text("Перетащите сюда скрипт или выберите группу в контекстном меню скрипта")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 8)
@@ -278,113 +273,12 @@ private struct ScriptGroupRow: View {
         } isTargeted: { isDropTarget = $0 }
         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
         .listRowBackground(Color.clear)
-        .help("Нажмите, чтобы раскрыть группу. Перетащите сюда скрипт, чтобы добавить его.")
+        .help("Нажмите, чтобы раскрыть группу. Перетащите сюда скрипт, чтобы добавить его. Правая кнопка — переименовать или удалить.")
     }
 
     private var groupScripts: [ScriptItem] { model.scripts(in: group) }
 
     private var groupControlColor: Color {
-        colorScheme == .dark ? .white : .black
-    }
-}
-
-private struct GroupScriptRow: View {
-    @EnvironmentObject private var model: ScriptLibrary
-    @Environment(\.openWindow) private var openWindow
-    let script: ScriptItem
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Button { model.selectedScriptID = script.id } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(script.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(model.note(for: script).isEmpty ? "Без примечания" : model.note(for: script))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if model.folderURLs.count > 1 {
-                        Label(script.folderName, systemImage: "folder")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                    if let lastRunDate = model.lastRunDate(for: script) {
-                        Label {
-                            Text(lastRunDate, format: .dateTime.day().month().year().hour().minute().second())
-                        } icon: {
-                            Image(systemName: "clock")
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            ScriptGroupMenu(script: script)
-            Button { model.toggle(script) } label: {
-                Image(systemName: model.runningScriptID == script.id ? "stop.fill" : "play.fill")
-                    .frame(width: 24, height: 24)
-                    .foregroundStyle(model.runningScriptID == script.id ? Color.red : Color.accentColor)
-            }
-            .buttonStyle(.borderless)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background {
-            if model.selectedScriptID == script.id {
-                RoundedRectangle(cornerRadius: 7).fill(Color.accentColor.opacity(0.10))
-            }
-        }
-        .contentShape(Rectangle())
-        .overlay {
-            RightClickView {
-                model.selectedScriptID = script.id
-                openWindow(id: "script-editor", value: script.id)
-            }
-        }
-    }
-}
-
-private struct ScriptGroupMenu: View {
-    @EnvironmentObject private var model: ScriptLibrary
-    @Environment(\.colorScheme) private var colorScheme
-    let script: ScriptItem
-
-    var body: some View {
-        Menu {
-            Button {
-                model.assign(script, to: nil)
-            } label: {
-                if model.groupID(for: script) == nil { Label("Без группы", systemImage: "checkmark") }
-                else { Text("Без группы") }
-            }
-            Divider()
-            ForEach(model.groups) { group in
-                Button {
-                    model.assign(script, to: group.id)
-                } label: {
-                    if model.groupID(for: script) == group.id { Label(group.name, systemImage: "checkmark") }
-                    else { Text(group.name) }
-                }
-            }
-        } label: {
-            Image(systemName: "folder.badge.gearshape")
-                .symbolRenderingMode(.monochrome)
-                .frame(width: 20, height: 20)
-                .foregroundColor(controlColor)
-        }
-        .menuStyle(.borderlessButton)
-        .tint(controlColor)
-        .fixedSize()
-        .help("Переместить в группу")
-    }
-
-    private var controlColor: Color {
         colorScheme == .dark ? .white : .black
     }
 }
@@ -448,13 +342,17 @@ private struct ScriptRow: View {
                                 .truncationMode(.middle)
                                 .help(script.url.deletingLastPathComponent().path)
                         }
-                        if let lastRunDate = model.lastRunDate(for: script) {
+                        if model.runningScriptID == script.id {
+                            Label("Выполняется", systemImage: "play.circle.fill")
+                                .foregroundStyle(Color.accentColor)
+                                .lineLimit(1)
+                        } else if let lastRunDate = model.lastRunDate(for: script) {
                             Label {
                                 Text(lastRunDate, format: .dateTime.day().month().hour().minute())
                             } icon: {
                                 Image(systemName: "clock")
                             }
-                            .fixedSize()
+                            .lineLimit(1)
                             .help(lastRunDate.formatted(date: .complete, time: .complete))
                         }
                     }
@@ -467,27 +365,12 @@ private struct ScriptRow: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
             .simultaneousGesture(
+                // Double click runs the script; it is stopped from the terminal toolbar.
                 TapGesture(count: 2).onEnded {
                     model.selectedScriptID = script.id
-                    isEditingNote = true
-                    noteFieldIsFocused = true
+                    if model.runningScriptID != script.id { model.run(script) }
                 }
             )
-            HStack(spacing: 4) {
-                if !model.groups.isEmpty {
-                    ScriptGroupMenu(script: script)
-                        .frame(width: 24, height: 24)
-                }
-                Button { model.toggle(script) } label: {
-                    Image(systemName: model.runningScriptID == script.id ? "stop.fill" : "play.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(model.runningScriptID == script.id ? Color.red : Color.accentColor)
-                }
-                .buttonStyle(.borderless)
-                .help(model.runningScriptID == script.id ? "Остановить" : "Запустить")
-            }
-            .fixedSize()
         }
         .padding(.leading, 5)
         .padding(.trailing, 9)
@@ -528,12 +411,61 @@ private struct ScriptRow: View {
         } isTargeted: { targeted in
             isDropTarget = targeted
         }
-        .overlay {
-            RightClickView {
+        .contextMenu { contextMenuItems }
+        .help("Двойной клик — запустить. Правая кнопка — другие действия.")
+    }
+
+    @ViewBuilder
+    private var contextMenuItems: some View {
+        if model.runningScriptID == script.id {
+            Button("Остановить", systemImage: "stop.fill") { model.stopRunningScript() }
+        } else {
+            Button("Запустить", systemImage: "play.fill") {
                 model.selectedScriptID = script.id
-                openWindow(id: "script-editor", value: script.id)
+                model.run(script)
             }
         }
+        Divider()
+        Button("Открыть в редакторе", systemImage: "pencil") {
+            model.selectedScriptID = script.id
+            openWindow(id: "script-editor", value: script.id)
+        }
+        Button("Изменить примечание", systemImage: "text.bubble") { beginEditingNote() }
+        if !model.groups.isEmpty {
+            Menu("Группа") {
+                Button {
+                    model.assign(script, to: nil)
+                } label: {
+                    if model.groupID(for: script) == nil { Label("Без группы", systemImage: "checkmark") }
+                    else { Text("Без группы") }
+                }
+                Divider()
+                ForEach(model.groups) { group in
+                    Button {
+                        model.assign(script, to: group.id)
+                    } label: {
+                        if model.groupID(for: script) == group.id { Label(group.name, systemImage: "checkmark") }
+                        else { Text(group.name) }
+                    }
+                }
+            }
+        }
+        Divider()
+        Button("Показать в Finder", systemImage: "folder") {
+            NSWorkspace.shared.activateFileViewerSelecting([script.url])
+        }
+        Button("Скопировать путь", systemImage: "doc.on.doc") {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(script.url.path, forType: .string)
+        }
+    }
+
+    private func beginEditingNote() {
+        model.selectedScriptID = script.id
+        isEditingNote = true
+        // Focus after the context menu has closed.
+        Task { @MainActor in noteFieldIsFocused = true }
     }
 
     private var selectionColor: Color {
@@ -545,40 +477,6 @@ private struct ScriptRow: View {
     private func finishEditingNote() {
         noteFieldIsFocused = false
         isEditingNote = false
-    }
-}
-
-private struct RightClickView: NSViewRepresentable {
-    let action: () -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
-
-    func makeNSView(context: Context) -> RightClickNSView {
-        let view = RightClickNSView()
-        view.action = context.coordinator.action
-        return view
-    }
-
-    func updateNSView(_ nsView: RightClickNSView, context: Context) {
-        context.coordinator.action = action
-        nsView.action = context.coordinator.action
-    }
-
-    final class Coordinator {
-        var action: () -> Void
-        init(action: @escaping () -> Void) { self.action = action }
-    }
-}
-
-private final class RightClickNSView: NSView {
-    var action: (() -> Void)?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        NSApp.currentEvent?.type == .rightMouseDown ? self : nil
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        action?()
     }
 }
 
@@ -632,6 +530,24 @@ private struct TerminalOutputView: View {
                     Label("Аргументы", systemImage: showingArguments ? "chevron.up" : "chevron.down")
                 }
                 .help(showingArguments ? "Скрыть аргументы" : "Показать аргументы запуска")
+                Button {
+                    if model.isSelectedScriptRunning {
+                        model.stopRunningScript()
+                    } else if let id = model.selectedScriptID, let script = model.script(withID: id) {
+                        model.run(script)
+                    }
+                } label: {
+                    Label(
+                        model.isSelectedScriptRunning ? "Остановить" : "Запустить",
+                        systemImage: model.isSelectedScriptRunning ? "stop.fill" : "play.fill"
+                    )
+                    .foregroundStyle(model.isSelectedScriptRunning ? Color.red : Color.accentColor)
+                }
+                .disabled(model.selectedScriptID == nil)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help(model.isSelectedScriptRunning
+                      ? "Остановить выбранный скрипт (⌘↩)"
+                      : "Запустить выбранный скрипт (⌘↩). Также — двойной клик по скрипту в списке.")
                 Button("Очистить") { model.clearOutput() }
                     .disabled(model.runningScriptID != nil)
             }
