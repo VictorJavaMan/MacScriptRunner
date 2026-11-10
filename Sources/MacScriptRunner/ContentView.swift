@@ -13,7 +13,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                if model.scripts.isEmpty {
+                if model.scripts.isEmpty && model.groups.isEmpty {
                     ContentUnavailableView {
                         Label("Нет скриптов", systemImage: "terminal")
                     } description: {
@@ -26,18 +26,17 @@ struct ContentView: View {
                 } else {
                     ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 4) {
-                        ForEach(model.groups) { group in
-                            ScriptGroupRow(
-                                group: group,
-                                isExpanded: groupExpansionBinding(for: group.id),
-                                onRename: { beginRenaming(group) },
-                                onDelete: { groupPendingDeletion = group }
-                            )
-                            .padding(.leading, 10)
-                        }
-                        ForEach(model.ungroupedScripts) { script in
-                            ScriptRow(script: script)
-                        }
+                            groupRows(model.groups.filter(\.isFavorite))
+                            if model.groups.contains(where: \.isFavorite) &&
+                                (model.groups.contains(where: { !$0.isFavorite }) || !model.ungroupedScripts.isEmpty) {
+                                Divider()
+                                    .padding(.leading, 10)
+                                    .padding(.vertical, 4)
+                            }
+                            groupRows(model.groups.filter { !$0.isFavorite })
+                            ForEach(model.ungroupedScripts) { script in
+                                ScriptRow(script: script)
+                            }
                         }
                         .padding(.leading, 2)
                         .padding(.trailing, 6)
@@ -148,6 +147,18 @@ struct ContentView: View {
         else { model.createGroup(named: groupName) }
     }
 
+    private func groupRows(_ groups: [ScriptGroup]) -> some View {
+        ForEach(groups) { group in
+            ScriptGroupRow(
+                group: group,
+                isExpanded: groupExpansionBinding(for: group.id),
+                onRename: { beginRenaming(group) },
+                onDelete: { groupPendingDeletion = group }
+            )
+            .padding(.leading, 10)
+        }
+    }
+
     private func groupExpansionBinding(for groupID: UUID) -> Binding<Bool> {
         Binding(
             get: { lastExpandedScriptGroupID == groupID.uuidString },
@@ -231,6 +242,12 @@ private struct ScriptGroupRow: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        if group.isFavorite {
+                            Image(systemName: "star.fill")
+                                .font(.caption)
+                                .foregroundStyle(.yellow)
+                                .accessibilityLabel("Избранное")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -241,6 +258,10 @@ private struct ScriptGroupRow: View {
             .padding(.vertical, 8)
             .contentShape(Rectangle())
             .contextMenu {
+                Button(group.isFavorite ? "Убрать из избранного" : "В избранное",
+                       systemImage: group.isFavorite ? "star.slash" : "star") {
+                    model.toggleGroupFavorite(group.id)
+                }
                 Button("Переименовать…", systemImage: "pencil", action: onRename)
                 Button("Удалить группу…", systemImage: "trash", role: .destructive, action: onDelete)
             }

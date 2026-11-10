@@ -14,6 +14,8 @@ struct ScriptGroup: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
     var scriptIDs: [String]
+    var favorite: Bool? = nil
+    var isFavorite: Bool { favorite == true }
 }
 
 /// Output changes published for the Telegram bot.
@@ -221,6 +223,12 @@ final class ScriptLibrary: ObservableObject {
 
     func deleteGroup(_ groupID: UUID) {
         groups.removeAll { $0.id == groupID }
+        saveGroups()
+    }
+
+    func toggleGroupFavorite(_ groupID: UUID) {
+        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[index].favorite = groups[index].isFavorite ? nil : true
         saveGroups()
     }
 
